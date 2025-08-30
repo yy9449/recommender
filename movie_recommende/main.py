@@ -9,6 +9,14 @@ import re
 from difflib import get_close_matches
 import warnings
 import os
+
+# Try to import advanced search component
+try:
+    from streamlit_searchbox import st_searchbox
+    ADVANCED_SEARCH = True
+except ImportError:
+    ADVANCED_SEARCH = False
+
 warnings.filterwarnings('ignore')
 
 # =========================
@@ -235,7 +243,25 @@ def create_user_item_matrix():
     
     return rating_matrix, user_names
 
-def find_similar_titles(input_title, titles_list, cutoff=0.6):
+def search_movies(search_term):
+    """Search function for movie titles"""
+    if not search_term:
+        return []
+    
+    all_titles = merged_df['Series_Title'].dropna().unique().tolist()
+    
+    # Find matches using fuzzy matching
+    matches = find_similar_titles(search_term, all_titles, cutoff=0.3)
+    
+    # Also include partial matches
+    partial_matches = [title for title in all_titles 
+                      if search_term.lower() in title.lower()]
+    
+    # Combine and deduplicate
+    all_matches = list(dict.fromkeys(matches + partial_matches))
+    
+    # Limit to top 20 results
+    return all_matches[:20]
     """Enhanced fuzzy matching for movie titles"""
     input_lower = input_title.lower().strip()
     
@@ -406,9 +432,102 @@ def main():
     input_method = st.sidebar.radio("Choose Input Method:", ["Movie Title", "Genre"])
     
     if input_method == "Movie Title":
-        movie_title = st.sidebar.text_input("🎬 Enter Movie Title:", placeholder="e.g., Avengers, Titanic")
+        st.sidebar.subheader("🎬 Movie Selection")
+        
+        # Get all movie titles for dropdown
+        all_movie_titles = sorted(merged_df['Series_Title'].dropna().unique().tolist())
+        
+        # Choice between different input methods
+        if ADVANCED_SEARCH:
+            title_input_method = st.sidebar.radio(
+                "Select movie by:", 
+                ["🔍 Advanced Search", "📋 Dropdown List", "✍️ Type manually"],
+                horizontal=True
+            )
+        else:
+            title_input_method = st.sidebar.radio(
+                "Select movie by:", 
+                ["📋 Dropdown List", "✍️ Type manually"],
+                horizontal=True
+            )
+        
+        movie_title = None
+        
+        if ADVANCED_SEARCH and title_input_method == "🔍 Advanced Search":
+            # Advanced searchable component
+            movie_title = st_searchbox(
+                search_movies,
+                placeholder="🔍 Type to search movies...",
+                label="Search Movies:",
+                default="",
+                clear_on_submit=False,
+                key="movie_search"
+            )
+            
+        elif title_input_method == "📋 Dropdown List":
+            # Regular Streamlit selectbox with all movies
+            movie_title = st.sidebar.selectbox(
+                "🎬 Select Movie from List:",
+                options=[""] + all_movie_titles,
+                index=0,
+                help="Scroll or start typing to find movies"
+            )
+            
+            # Show random suggestions to help users discover movies
+            if not movie_title:
+                st.sidebar.write("🎲 **Random Suggestions:**")
+                random_movies = np.random.choice(all_movie_titles, 5, replace=False)
+                for i, movie in enumerate(random_movies, 1):
+                    if st.sidebar.button(f"{i}. {movie}", key=f"random_{i}", use_container_width=True):
+                        movie_title = movie
+        
+        elif title_input_method == "✍️ Type manually":
+            # Manual text input with live suggestions
+            movie_input = st.sidebar.text_input(
+                "🎬 Enter Movie Title:", 
+                placeholder="e.g., Avengers, Titanic",
+                help="Type the movie title manually"
+            )
+            
+            movie_title = movie_input
+            
+            # Show live suggestions as user types
+            if movie_input and len(movie_input) > 2:
+                suggestions = find_similar_titles(movie_input, all_movie_titles, cutoff=0.4)
+                if suggestions:
+                    st.sidebar.write("💡 **Suggestions:**")
+                    for i, suggestion in enumerate(suggestions[:5], 1):
+                        similarity_score = len(set(movie_input.lower().split()) & set(suggestion.lower().split()))
+                        if st.sidebar.button(
+                            f"{suggestion} {'⭐' * min(similarity_score, 3)}", 
+                            key=f"suggest_{i}",
+                            use_container_width=True,
+                            help=f"Similarity match for '{movie_input}'"
+                        ):
+                            movie_title = suggestion
+                            # Force rerun to update the input
+                            st.session_state['movie_input'] = suggestion
+        
+        # Show selected movie info
+        if movie_title and movie_title in all_movie_titles:
+            movie_info = merged_df[merged_df['Series_Title'] == movie_title].iloc[0]
+            
+            with st.sidebar.expander("ℹ️ Selected Movie Info", expanded=True):
+                rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+                genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+                year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
+                
+                st.write(f"**Title:** {movie_title}")
+                if genre_col in movie_info:
+                    st.write(f"**Genre:** {movie_info[genre_col]}")
+                if rating_col in movie_info:
+                    st.write(f"**Rating:** {movie_info[rating_col]}⭐")
+                if year_col in movie_info:
+                    st.write(f"**Year:** {movie_info[year_col]}")
+        
         genre_input = None
-    else:
+        
+    else:  # Genre input
         # Show available genres
         genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
         all_genres = set()
