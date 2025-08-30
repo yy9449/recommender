@@ -105,6 +105,9 @@ def collaborative_filtering_knn(merged_df, target_movie, top_n=5, n_neighbors=5)
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
     return result_df[['Series_Title', genre_col, rating_col]].head(top_n)
+
+@st.cache_data
+def collaborative_filtering_enhanced(merged_df, target_movie, top_n=5):
     """Enhanced collaborative filtering"""
     if not target_movie:
         return None
