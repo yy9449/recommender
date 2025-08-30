@@ -442,92 +442,16 @@ def main():
         # Get all movie titles for dropdown
         all_movie_titles = sorted(merged_df['Series_Title'].dropna().unique().tolist())
         
-        # Create a searchable dropdown experience
-        search_term = st.sidebar.text_input(
-            "🎬 Search or Select Movie:",
-            placeholder="Type to search or click dropdown below...",
-            help="Start typing to filter movies, or use dropdown to browse all"
+        # Simple dropdown selection
+        movie_title = st.sidebar.selectbox(
+            "Select a Movie:",
+            options=[""] + all_movie_titles,
+            index=0,
+            help="Choose a movie from the list to get recommendations"
         )
         
-        # Filter movies based on search term
-        if search_term:
-            # Filter movies that match the search term
-            filtered_movies = [
-                title for title in all_movie_titles 
-                if search_term.lower() in title.lower()
-            ]
-            
-            # Also add fuzzy matches
-            fuzzy_matches = find_similar_titles(search_term, all_movie_titles, cutoff=0.4)
-            for match in fuzzy_matches:
-                if match not in filtered_movies:
-                    filtered_movies.append(match)
-            
-            # Limit results to prevent overwhelming dropdown
-            filtered_movies = filtered_movies[:50]
-            
-            if filtered_movies:
-                # Show filtered dropdown
-                movie_title = st.sidebar.selectbox(
-                    f"Found {len(filtered_movies)} matches:",
-                    options=[""] + filtered_movies,
-                    index=0,
-                    key="filtered_dropdown"
-                )
-                
-                # If user typed exact match, auto-select it
-                if search_term in filtered_movies and not movie_title:
-                    movie_title = search_term
-                    
-            else:
-                st.sidebar.warning(f"No movies found matching '{search_term}'")
-                movie_title = None
-        else:
-            # Show full dropdown when no search term
-            movie_title = st.sidebar.selectbox(
-                "Or browse all movies:",
-                options=[""] + all_movie_titles,
-                index=0,
-                help="Select from complete movie list"
-            )
-        
-        # If user typed something but didn't select from dropdown, use the typed text
-        if search_term and not movie_title and search_term in all_movie_titles:
-            movie_title = search_term
-        elif search_term and not movie_title:
-            # Show best match suggestion
-            best_matches = find_similar_titles(search_term, all_movie_titles, cutoff=0.6)
-            if best_matches:
-                st.sidebar.info(f"💡 Did you mean: **{best_matches[0]}**?")
-                if st.sidebar.button(f"Select '{best_matches[0]}'", key="best_match"):
-                    movie_title = best_matches[0]
-        
-        # Alternative: Show some quick popular options when nothing is selected
-        if not movie_title and not search_term:
-            st.sidebar.write("🎲 **Quick Select Popular Movies:**")
-            
-            # Get some popular movies (top rated)
-            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-            if rating_col in merged_df.columns:
-                popular_movies = merged_df.nlargest(8, rating_col)['Series_Title'].tolist()
-            else:
-                popular_movies = np.random.choice(all_movie_titles, 8, replace=False).tolist()
-            
-            # Show in 2 columns
-            col1, col2 = st.sidebar.columns(2)
-            for i, movie in enumerate(popular_movies):
-                with col1 if i % 2 == 0 else col2:
-                    short_title = movie[:20] + "..." if len(movie) > 20 else movie
-                    if st.button(
-                        short_title,
-                        key=f"popular_{i}",
-                        use_container_width=True,
-                        help=f"Select: {movie}"
-                    ):
-                        movie_title = movie
-        
         # Show selected movie info
-        if movie_title and movie_title in all_movie_titles:
+        if movie_title:
             movie_info = merged_df[merged_df['Series_Title'] == movie_title].iloc[0]
             
             with st.sidebar.expander("ℹ️ Selected Movie Info", expanded=True):
