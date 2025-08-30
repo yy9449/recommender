@@ -91,6 +91,100 @@ def load_data_with_uploader():
     
     return None, "Please upload both CSV files"
 
+def display_movie_posters(results_df, merged_df):
+    """Display movie posters in cinema-style layout (5 columns per row)"""
+    if results_df is None or results_df.empty:
+        return
+    
+    # Get poster links and movie info
+    movies_with_posters = []
+    for _, row in results_df.iterrows():
+        movie_title = row['Series_Title']
+        full_movie_info = merged_df[merged_df['Series_Title'] == movie_title].iloc[0]
+        
+        poster_url = full_movie_info.get('Poster_Link', '')
+        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
+        
+        movies_with_posters.append({
+            'title': movie_title,
+            'poster': poster_url if pd.notna(poster_url) and poster_url.strip() else None,
+            'rating': full_movie_info.get(rating_col, 'N/A'),
+            'genre': full_movie_info.get(genre_col, 'N/A'),
+            'year': full_movie_info.get(year_col, 'N/A')
+        })
+    
+    # Display in rows of 5 columns
+    movies_per_row = 5
+    
+    for i in range(0, len(movies_with_posters), movies_per_row):
+        cols = st.columns(movies_per_row)
+        row_movies = movies_with_posters[i:i + movies_per_row]
+        
+        for j, movie in enumerate(row_movies):
+            with cols[j]:
+                # Movie poster with consistent sizing
+                if movie['poster']:
+                    try:
+                        st.image(
+                            movie['poster'], 
+                            width=200,  # Fixed width for consistency
+                            use_column_width=False
+                        )
+                    except:
+                        # Fallback if image fails to load
+                        st.container()
+                        st.markdown(
+                            f"""
+                            <div style='
+                                width: 200px; 
+                                height: 300px; 
+                                background-color: #f0f0f0; 
+                                display: flex; 
+                                align-items: center; 
+                                justify-content: center;
+                                border: 1px solid #ddd;
+                                border-radius: 8px;
+                            '>
+                                <p style='text-align: center; color: #666;'>🎬<br>No Image<br>Available</p>
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                else:
+                    # No poster available - show placeholder
+                    st.markdown(
+                        f"""
+                        <div style='
+                            width: 200px; 
+                            height: 300px; 
+                            background-color: #f0f0f0; 
+                            display: flex; 
+                            align-items: center; 
+                            justify-content: center;
+                            border: 1px solid #ddd;
+                            border-radius: 8px;
+                            margin-bottom: 10px;
+                        '>
+                            <p style='text-align: center; color: #666;'>🎬<br>No Image<br>Available</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                
+                # Movie information below poster
+                st.markdown(f"**{movie['title'][:25]}{'...' if len(movie['title']) > 25 else ''}**")
+                st.markdown(f"⭐ {movie['rating']}/10")
+                st.markdown(f"📅 {movie['year']}")
+                
+                # Genre with text wrapping
+                genre_text = str(movie['genre'])[:30] + "..." if len(str(movie['genre'])) > 30 else str(movie['genre'])
+                st.markdown(f"🎭 {genre_text}")
+                
+                # Add some spacing between movies
+                st.markdown("---")
+
 # =========================
 # Main Application
 # =========================
@@ -206,47 +300,68 @@ def main():
                 # Algorithm info
                 st.info(f"🔬 **{algorithm}**: {algorithm_info}")
                 
-                # Results table
+                # Results display
                 st.subheader("🎬 Recommended Movies")
                 
-                # Format the results for better display
-                display_results = results.copy()
-                rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
-                genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre'
+                # Cinema-style poster display
+                display_movie_posters(results, merged_df)
                 
-                display_results = display_results.rename(columns={
-                    'Series_Title': 'Movie Title',
-                    genre_col: 'Genre',
-                    rating_col: 'IMDB Rating'
-                })
-                
-                # Add ranking
-                display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
-                
-                st.dataframe(
-                    display_results,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Rank": st.column_config.NumberColumn("Rank", width="small"),
-                        "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
-                        "Genre": st.column_config.TextColumn("Genre", width="medium"),
-                        "IMDB Rating": st.column_config.NumberColumn("IMDB Rating", format="%.1f⭐")
-                    }
-                )
+                # Optional: Show detailed table
+                with st.expander("📊 View Detailed Information", expanded=False):
+                    # Format the results for better display
+                    display_results = results.copy()
+                    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
+                    genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre'
+                    
+                    display_results = display_results.rename(columns={
+                        'Series_Title': 'Movie Title',
+                        genre_col: 'Genre',
+                        rating_col: 'IMDB Rating'
+                    })
+                    
+                    # Add ranking
+                    display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
+                    
+                    st.dataframe(
+                        display_results,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                            "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
+                            "Genre": st.column_config.TextColumn("Genre", width="medium"),
+                            "IMDB Rating": st.column_config.NumberColumn("IMDB Rating", format="%.1f⭐")
+                        }
+                    )
                 
                 # Additional insights
                 if movie_title:
                     st.subheader("📈 Recommendation Insights")
-                    avg_rating = display_results['IMDB Rating'].mean()
-                    st.metric("Average Recommended Rating", f"{avg_rating:.1f}⭐")
                     
-                    # Genre distribution
-                    genres_list = []
-                    for genre_str in display_results['Genre'].dropna():
-                        genres_list.extend([g.strip() for g in str(genre_str).split(',')])
+                    # Create columns for metrics
+                    col1, col2, col3 = st.columns(3)
                     
+                    with col1:
+                        avg_rating = results[rating_col].mean()
+                        st.metric("Average Rating", f"{avg_rating:.1f}⭐")
+                    
+                    with col2:
+                        total_movies = len(results)
+                        st.metric("Total Recommendations", total_movies)
+                    
+                    with col3:
+                        # Most common genre
+                        genres_list = []
+                        for genre_str in results[genre_col].dropna():
+                            genres_list.extend([g.strip() for g in str(genre_str).split(',')])
+                        
+                        if genres_list:
+                            most_common_genre = pd.Series(genres_list).mode().iloc[0] if len(pd.Series(genres_list).mode()) > 0 else "Various"
+                            st.metric("Top Genre", most_common_genre)
+                    
+                    # Genre distribution chart
                     if genres_list:
+                        st.subheader("🎭 Genre Distribution")
                         genre_counts = pd.Series(genres_list).value_counts()
                         st.bar_chart(genre_counts.head(5))
             
