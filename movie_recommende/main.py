@@ -149,6 +149,35 @@ def safe_convert_to_numeric(value, default=None):
     
     return default
 
+def find_similar_titles(input_title, titles_list, cutoff=0.6):
+    """Enhanced fuzzy matching for movie titles"""
+    if not input_title or not titles_list:
+        return []
+    
+    input_lower = input_title.lower().strip()
+    
+    # Direct match
+    exact_matches = [title for title in titles_list if title.lower() == input_lower]
+    if exact_matches:
+        return exact_matches
+    
+    # Partial match
+    partial_matches = []
+    for title in titles_list:
+        title_lower = title.lower()
+        if input_lower in title_lower:
+            partial_matches.append((title, len(input_lower) / len(title_lower)))
+        elif title_lower in input_lower:
+            partial_matches.append((title, len(title_lower) / len(input_lower)))
+    
+    if partial_matches:
+        partial_matches.sort(key=lambda x: x[1], reverse=True)
+        return [match[0] for match in partial_matches[:3]]
+    
+    # Fuzzy match
+    matches = get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
+    return matches
+
 @st.cache_data
 def create_content_features():
     """Create enhanced content-based features matrix"""
@@ -262,30 +291,6 @@ def search_movies(search_term):
     
     # Limit to top 20 results
     return all_matches[:20]
-    """Enhanced fuzzy matching for movie titles"""
-    input_lower = input_title.lower().strip()
-    
-    # Direct match
-    exact_matches = [title for title in titles_list if title.lower() == input_lower]
-    if exact_matches:
-        return exact_matches
-    
-    # Partial match
-    partial_matches = []
-    for title in titles_list:
-        title_lower = title.lower()
-        if input_lower in title_lower:
-            partial_matches.append((title, len(input_lower) / len(title_lower)))
-        elif title_lower in input_lower:
-            partial_matches.append((title, len(title_lower) / len(input_lower)))
-    
-    if partial_matches:
-        partial_matches.sort(key=lambda x: x[1], reverse=True)
-        return [match[0] for match in partial_matches[:3]]
-    
-    # Fuzzy match
-    matches = get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
-    return matches
 
 # =========================
 # Recommendation Functions
