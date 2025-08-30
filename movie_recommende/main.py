@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("🎬 Enhanced Movie Recommendation System")
+st.title("🎬 Movie Recommendation System")
 st.markdown("---")
 
 # =========================
