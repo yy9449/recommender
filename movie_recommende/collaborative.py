@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
 import streamlit as st
 from content_based import find_similar_titles
 
@@ -41,7 +42,69 @@ def create_user_item_matrix(merged_df):
     return rating_matrix, user_names
 
 @st.cache_data
-def collaborative_filtering_enhanced(merged_df, target_movie, top_n=5):
+def collaborative_filtering_knn(merged_df, target_movie, top_n=5, n_neighbors=5):
+    """Enhanced collaborative filtering using KNN"""
+    if not target_movie:
+        return None
+    
+    similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
+    if not similar_titles:
+        return None
+    
+    target_title = similar_titles[0]
+    target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
+    
+    rating_matrix, user_names = create_user_item_matrix(merged_df)
+    
+    # Use KNN for finding similar users
+    knn_model = NearestNeighbors(n_neighbors=n_neighbors, metric='cosine', algorithm='brute')
+    knn_model.fit(rating_matrix)
+    
+    target_movie_idx = merged_df.index.get_loc(target_idx)
+    target_ratings = rating_matrix[:, target_movie_idx]
+    
+    # Find users who rated this movie highly
+    active_users = np.where(target_ratings > 3)[0]
+    
+    if len(active_users) == 0:
+        return collaborative_filtering_enhanced(merged_df, target_movie, top_n)
+    
+    # Get similar users using KNN
+    user_similarities = []
+    for user_idx in active_users:
+        distances, indices = knn_model.kneighbors([rating_matrix[user_idx]], n_neighbors=min(n_neighbors, len(rating_matrix)))
+        
+        for i, neighbor_idx in enumerate(indices[0]):
+            if neighbor_idx != user_idx:  # Don't include self
+                similarity = 1 - distances[0][i]  # Convert distance to similarity
+                user_similarities.append((neighbor_idx, similarity))
+    
+    # Sort by similarity and get top users
+    user_similarities = sorted(user_similarities, key=lambda x: x[1], reverse=True)
+    top_users = user_similarities[:min(10, len(user_similarities))]
+    
+    # Generate recommendations based on top similar users
+    movie_scores = {}
+    for user_idx, similarity in top_users:
+        user_ratings = rating_matrix[user_idx]
+        for movie_idx, rating in enumerate(user_ratings):
+            if rating > 3 and movie_idx != target_movie_idx:
+                movie_title = merged_df.iloc[movie_idx]['Series_Title']
+                if movie_title not in movie_scores:
+                    movie_scores[movie_title] = 0
+                movie_scores[movie_title] += rating * similarity
+    
+    recommendations = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    
+    if not recommendations:
+        return collaborative_filtering_enhanced(merged_df, target_movie, top_n)
+    
+    rec_titles = [rec[0] for rec in recommendations]
+    result_df = merged_df[merged_df['Series_Title'].isin(rec_titles)]
+    
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+    return result_df[['Series_Title', genre_col, rating_col]].head(top_n)
     """Enhanced collaborative filtering"""
     if not target_movie:
         return None
