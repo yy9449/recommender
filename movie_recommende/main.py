@@ -434,158 +434,92 @@ def main():
     if input_method == "Movie Title":
         st.sidebar.subheader("🎬 Movie Selection")
         
-        # Get all movie titles for searching
+        # Get all movie titles for dropdown
         all_movie_titles = sorted(merged_df['Series_Title'].dropna().unique().tolist())
         
-        # Unified movie input with multiple functionalities
-        if ADVANCED_SEARCH:
-            # Advanced unified search box
-            movie_title = st_searchbox(
-                search_movies,
-                placeholder="🔍 Search movies, browse dropdown, or type manually...",
-                label="🎬 Find Your Movie:",
-                default="",
-                clear_on_submit=False,
-                key="unified_movie_search"
-            )
-        else:
-            # Fallback: Enhanced text input with autocomplete-like behavior
-            st.sidebar.write("🎬 **Find Your Movie:**")
-            
-            # Create two columns for input and suggestions
-            movie_input = st.sidebar.text_input(
-                "Movie Search",
-                placeholder="🔍 Type movie name, partial match works...",
-                help="Start typing any movie name. Suggestions will appear below.",
-                label_visibility="collapsed"
-            )
-            
-            movie_title = movie_input
-            
-            # Real-time suggestions as user types
-            if movie_input and len(movie_input) >= 1:
-                # Get suggestions
-                exact_matches = [title for title in all_movie_titles 
-                               if title.lower().startswith(movie_input.lower())]
-                fuzzy_matches = find_similar_titles(movie_input, all_movie_titles, cutoff=0.3)
-                partial_matches = [title for title in all_movie_titles 
-                                 if movie_input.lower() in title.lower()]
-                
-                # Combine and prioritize matches
-                all_matches = []
-                all_matches.extend(exact_matches[:3])  # Exact matches first
-                all_matches.extend([m for m in fuzzy_matches[:3] if m not in all_matches])  # Then fuzzy
-                all_matches.extend([m for m in partial_matches[:4] if m not in all_matches])  # Then partial
-                
-                if all_matches:
-                    st.sidebar.write("💡 **Suggestions:** *(click to select)*")
-                    
-                    # Create a more compact suggestion layout
-                    for i, suggestion in enumerate(all_matches[:8], 1):
-                        # Highlight the matching part
-                        if movie_input.lower() in suggestion.lower():
-                            match_start = suggestion.lower().find(movie_input.lower())
-                            before = suggestion[:match_start]
-                            match = suggestion[match_start:match_start + len(movie_input)]
-                            after = suggestion[match_start + len(movie_input):]
-                            display_text = f"{before}**{match}**{after}"
-                        else:
-                            display_text = suggestion
-                        
-                        # Use columns for better layout
-                        col1, col2 = st.sidebar.columns([4, 1])
-                        with col1:
-                            if st.button(
-                                display_text, 
-                                key=f"suggest_{i}",
-                                use_container_width=True,
-                                help=f"Select: {suggestion}"
-                            ):
-                                movie_title = suggestion
-                                # Update session state to reflect selection
-                                st.session_state[f'unified_movie_search'] = suggestion
-                        
-                        with col2:
-                            # Show match type indicator
-                            if suggestion in exact_matches:
-                                st.write("🎯")  # Exact match
-                            elif suggestion in fuzzy_matches:
-                                st.write("🔍")  # Fuzzy match
-                            else:
-                                st.write("📝")  # Partial match
-            
-            elif not movie_input:
-                # Show popular/random suggestions when input is empty
-                st.sidebar.write("🎲 **Popular Movies:** *(click to select)*")
-                
-                # Get top-rated movies for suggestions
-                rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-                if rating_col in merged_df.columns:
-                    top_movies = merged_df.nlargest(10, rating_col)['Series_Title'].tolist()
-                else:
-                    top_movies = np.random.choice(all_movie_titles, 10, replace=False)
-                
-                # Show in 2 columns for better space usage
-                col1, col2 = st.sidebar.columns(2)
-                for i, movie in enumerate(top_movies[:6]):
-                    with col1 if i % 2 == 0 else col2:
-                        if st.button(
-                            movie[:25] + "..." if len(movie) > 25 else movie,
-                            key=f"popular_{i}",
-                            use_container_width=True,
-                            help=f"Select: {movie}"
-                        ):
-                            movie_title = movie
-                            st.session_state[f'unified_movie_search'] = movie
+        # Create a searchable dropdown experience
+        search_term = st.sidebar.text_input(
+            "🎬 Search or Select Movie:",
+            placeholder="Type to search or click dropdown below...",
+            help="Start typing to filter movies, or use dropdown to browse all"
+        )
         
-        # Quick browse options
-        with st.sidebar.expander("🗂️ Browse by Category", expanded=False):
-            st.write("**Quick Browse Options:**")
+        # Filter movies based on search term
+        if search_term:
+            # Filter movies that match the search term
+            filtered_movies = [
+                title for title in all_movie_titles 
+                if search_term.lower() in title.lower()
+            ]
             
-            # Browse by first letter
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔤 A-M Movies", use_container_width=True):
-                    am_movies = [title for title in all_movie_titles if title[0].upper() < 'N'][:50]
-                    st.session_state['browse_results'] = am_movies
-                    st.session_state['browse_title'] = "Movies A-M"
+            # Also add fuzzy matches
+            fuzzy_matches = find_similar_titles(search_term, all_movie_titles, cutoff=0.4)
+            for match in fuzzy_matches:
+                if match not in filtered_movies:
+                    filtered_movies.append(match)
             
-            with col2:
-                if st.button("🔤 N-Z Movies", use_container_width=True):
-                    nz_movies = [title for title in all_movie_titles if title[0].upper() >= 'N'][:50]
-                    st.session_state['browse_results'] = nz_movies
-                    st.session_state['browse_title'] = "Movies N-Z"
+            # Limit results to prevent overwhelming dropdown
+            filtered_movies = filtered_movies[:50]
             
-            # Browse by decade
-            year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
-            if year_col in merged_df.columns:
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("📅 2010s Movies", use_container_width=True):
-                        decade_movies = merged_df[
-                            (merged_df[year_col] >= 2010) & (merged_df[year_col] < 2020)
-                        ]['Series_Title'].tolist()[:50]
-                        st.session_state['browse_results'] = decade_movies
-                        st.session_state['browse_title'] = "2010s Movies"
-                
-                with col2:
-                    if st.button("📅 2000s Movies", use_container_width=True):
-                        decade_movies = merged_df[
-                            (merged_df[year_col] >= 2000) & (merged_df[year_col] < 2010)
-                        ]['Series_Title'].tolist()[:50]
-                        st.session_state['browse_results'] = decade_movies
-                        st.session_state['browse_title'] = "2000s Movies"
-            
-            # Show browse results
-            if 'browse_results' in st.session_state and st.session_state['browse_results']:
-                st.write(f"**{st.session_state['browse_title']}:**")
-                browse_selection = st.selectbox(
-                    "Select from browsed movies:",
-                    [""] + st.session_state['browse_results'],
-                    key="browse_select"
+            if filtered_movies:
+                # Show filtered dropdown
+                movie_title = st.sidebar.selectbox(
+                    f"Found {len(filtered_movies)} matches:",
+                    options=[""] + filtered_movies,
+                    index=0,
+                    key="filtered_dropdown"
                 )
-                if browse_selection:
-                    movie_title = browse_selection
+                
+                # If user typed exact match, auto-select it
+                if search_term in filtered_movies and not movie_title:
+                    movie_title = search_term
+                    
+            else:
+                st.sidebar.warning(f"No movies found matching '{search_term}'")
+                movie_title = None
+        else:
+            # Show full dropdown when no search term
+            movie_title = st.sidebar.selectbox(
+                "Or browse all movies:",
+                options=[""] + all_movie_titles,
+                index=0,
+                help="Select from complete movie list"
+            )
+        
+        # If user typed something but didn't select from dropdown, use the typed text
+        if search_term and not movie_title and search_term in all_movie_titles:
+            movie_title = search_term
+        elif search_term and not movie_title:
+            # Show best match suggestion
+            best_matches = find_similar_titles(search_term, all_movie_titles, cutoff=0.6)
+            if best_matches:
+                st.sidebar.info(f"💡 Did you mean: **{best_matches[0]}**?")
+                if st.sidebar.button(f"Select '{best_matches[0]}'", key="best_match"):
+                    movie_title = best_matches[0]
+        
+        # Alternative: Show some quick popular options when nothing is selected
+        if not movie_title and not search_term:
+            st.sidebar.write("🎲 **Quick Select Popular Movies:**")
+            
+            # Get some popular movies (top rated)
+            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+            if rating_col in merged_df.columns:
+                popular_movies = merged_df.nlargest(8, rating_col)['Series_Title'].tolist()
+            else:
+                popular_movies = np.random.choice(all_movie_titles, 8, replace=False).tolist()
+            
+            # Show in 2 columns
+            col1, col2 = st.sidebar.columns(2)
+            for i, movie in enumerate(popular_movies):
+                with col1 if i % 2 == 0 else col2:
+                    short_title = movie[:20] + "..." if len(movie) > 20 else movie
+                    if st.button(
+                        short_title,
+                        key=f"popular_{i}",
+                        use_container_width=True,
+                        help=f"Select: {movie}"
+                    ):
+                        movie_title = movie
         
         # Show selected movie info
         if movie_title and movie_title in all_movie_titles:
