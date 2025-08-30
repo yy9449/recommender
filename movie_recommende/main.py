@@ -129,8 +129,7 @@ def display_movie_posters(results_df, merged_df):
                     try:
                         st.image(
                             movie['poster'], 
-                            width=200,  # Fixed width for consistency
-                            use_column_width=False
+                            width=200  # Fixed width for consistency
                         )
                     except:
                         # Fallback if image fails to load
