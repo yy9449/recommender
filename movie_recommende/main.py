@@ -285,18 +285,11 @@ def main():
     # Algorithm selection
     algorithm = st.sidebar.selectbox(
         "🔬 Choose Algorithm:",
-        ["Smart Hybrid (Recommended)", "Content-Based", "Collaborative Filtering", "Manual Hybrid"]
+        ["Hybrid", "Content-Based", "Collaborative Filtering"]
     )
     
     # Number of recommendations
     top_n = st.sidebar.slider("📊 Number of Recommendations:", 3, 15, 8)
-    
-    # Additional options for advanced users
-    with st.sidebar.expander("🔧 Advanced Options"):
-        use_real_ratings = st.checkbox("Use Real User Data", value=True, 
-                                     help="Use uploaded user rating data if available")
-        sort_by_rating = st.checkbox("Prioritize High Ratings", value=True,
-                                   help="Give preference to higher-rated movies")
     
     # Generate button
     if st.sidebar.button("🚀 Generate Recommendations", type="primary"):
@@ -304,35 +297,31 @@ def main():
             st.error("❌ Please provide either a movie title or select a genre!")
             return
         
-        with st.spinner("🎬 Generating enhanced recommendations..."):
+        with st.spinner("🎬 Generating recommendations using advanced algorithms..."):
             results = None
             algorithm_info = ""
             
-            # Get user ratings if available
-            user_ratings_df = None
-            if use_real_ratings:
-                if 'user_ratings_df' in st.session_state:
-                    user_ratings_df = st.session_state['user_ratings_df']
-                else:
-                    user_ratings_df = load_user_ratings()
-            
             if algorithm == "Content-Based":
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
-                algorithm_info = "Content-Based Filtering uses movie features like genre, director, year, and rating to find similar movies."
+                algorithm_info = "Content-Based Filtering uses Cosine Similarity to analyze movie features like genre, director, year, and rating to find similar movies."
             
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
-                    results = collaborative_filtering_with_real_data(merged_df, movie_title, user_ratings_df, top_n)
-                    algorithm_info = "Collaborative Filtering analyzes user behavior patterns to recommend movies liked by similar users."
+                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
+                    algorithm_info = "Collaborative Filtering uses K-Nearest Neighbors (KNN) to analyze user behavior patterns and recommend movies liked by similar users."
                 else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
             
-            elif algorithm == "Manual Hybrid":
-                # Use the enhanced hybrid with manual control
-                from hybrid import hybrid_recommendation_enhanced
-                use_both = movie_title and genre_input
-                results = hybrid_recommendation_enhanced(merged_df, movie_title, genre_input, top_n, use_both)
+            else:  # Hybrid
+                from hybrid import hybrid_recommendation_system
+                results = hybrid_recommendation_system(merged_df, movie_title, genre_input, top_n)
+                if movie_title and genre_input:
+                    algorithm_info = "Hybrid System combines KNN Collaborative Filtering (50%) + Cosine Similarity Content-Based on movie (25%) + Cosine Similarity Content-Based on genre (25%) for maximum accuracy."
+                elif movie_title:
+                    algorithm_info = "Hybrid System combines KNN Collaborative Filtering (60%) + Cosine Similarity Content-Based Filtering (40%) for enhanced accuracy."
+                else:
+                    algorithm_info = "Content-Based Filtering with Cosine Similarity and enhanced genre weighting for optimal genre-based recommendations."input, top_n, use_both)
                 algorithm_info = "Manual Hybrid allows you to control the combination of Content-Based and Collaborative approaches."
                 
             else:  # Smart Hybrid (default)
