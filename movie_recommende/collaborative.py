@@ -126,8 +126,8 @@ def create_user_item_matrix_synthetic(merged_df):
     return rating_matrix, user_names
 
 @st.cache_data
-def collaborative_filtering_with_real_data(merged_df, target_movie=None, user_ratings_df=None, top_n=5, n_neighbors=5):
-    """Enhanced collaborative filtering using real user data"""
+def collaborative_filtering_knn(merged_df, target_movie=None, user_ratings_df=None, top_n=5, n_neighbors=10):
+    """KNN-based collaborative filtering using real user data"""
     if not target_movie:
         return None
     
@@ -141,61 +141,63 @@ def collaborative_filtering_with_real_data(merged_df, target_movie=None, user_ra
     # Use real user data if available, otherwise fall back to synthetic
     rating_matrix, user_names = create_user_item_matrix_from_real_data(merged_df, user_ratings_df)
     
-    # Use KNN for finding similar users
-    knn_model = NearestNeighbors(n_neighbors=min(n_neighbors, len(rating_matrix)), metric='cosine', algorithm='brute')
+    # Ensure we have enough neighbors
+    actual_neighbors = min(n_neighbors, len(rating_matrix) - 1)
+    if actual_neighbors < 1:
+        return collaborative_filtering_enhanced_fallback(merged_df, target_movie, top_n)
+    
+    # Use KNN with cosine distance for finding similar users
+    knn_model = NearestNeighbors(n_neighbors=actual_neighbors, metric='cosine', algorithm='brute')
     knn_model.fit(rating_matrix)
     
     target_movie_idx = merged_df.index.get_loc(target_idx)
     target_ratings = rating_matrix[:, target_movie_idx]
     
-    # Find users who rated this movie highly (rating > 3)
-    active_users = np.where(target_ratings > 3)[0]
+    # Find users who rated this movie (rating > 0)
+    active_users = np.where(target_ratings > 0)[0]
     
     if len(active_users) == 0:
-        # If no users rated this movie highly, use content-based approach
         return collaborative_filtering_enhanced_fallback(merged_df, target_movie, top_n)
     
-    # Get similar users using KNN
-    user_similarities = []
-    for user_idx in active_users:
-        distances, indices = knn_model.kneighbors([rating_matrix[user_idx]], 
-                                                 n_neighbors=min(n_neighbors, len(rating_matrix)))
-        
-        for i, neighbor_idx in enumerate(indices[0]):
-            if neighbor_idx != user_idx:  # Don't include self
-                similarity = 1 - distances[0][i]  # Convert distance to similarity
-                user_similarities.append((neighbor_idx, similarity))
-    
-    # Sort by similarity and get top users
-    user_similarities = sorted(user_similarities, key=lambda x: x[1], reverse=True)
-    top_users = user_similarities[:min(10, len(user_similarities))]
-    
-    # Generate recommendations based on top similar users
+    # Get recommendations from similar users
     movie_scores = {}
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
     
-    for user_idx, similarity in top_users:
-        user_ratings = rating_matrix[user_idx]
-        for movie_idx, rating in enumerate(user_ratings):
-            if rating > 3 and movie_idx != target_movie_idx:
-                movie_title = merged_df.iloc[movie_idx]['Series_Title']
-                if movie_title not in movie_scores:
-                    movie_scores[movie_title] = 0
-                # Weight by both user rating and similarity, plus IMDB rating
-                imdb_rating = merged_df.iloc[movie_idx][rating_col] if pd.notna(merged_df.iloc[movie_idx][rating_col]) else 7.0
-                combined_score = (rating * similarity * 0.7) + (imdb_rating * 0.3)
-                movie_scores[movie_title] += combined_score
+    for user_idx in active_users:
+        # Find similar users using KNN
+        distances, neighbor_indices = knn_model.kneighbors([rating_matrix[user_idx]])
+        
+        user_weight = target_ratings[user_idx] / 5.0  # Normalize user rating
+        
+        for i, neighbor_idx in enumerate(neighbor_indices[0]):
+            if neighbor_idx != user_idx:  # Skip self
+                similarity = max(0.1, 1 - distances[0][i])  # Convert distance to similarity
+                neighbor_ratings = rating_matrix[neighbor_idx]
+                
+                # Get recommendations from this similar user
+                for movie_idx, rating in enumerate(neighbor_ratings):
+                    if rating > 3.5 and movie_idx != target_movie_idx:  # Higher threshold for better quality
+                        movie_title = merged_df.iloc[movie_idx]['Series_Title']
+                        if movie_title not in movie_scores:
+                            movie_scores[movie_title] = 0
+                        
+                        # Calculate score: user_rating * similarity * user_weight * imdb_factor
+                        imdb_rating = merged_df.iloc[movie_idx][rating_col]
+                        imdb_rating = imdb_rating if pd.notna(imdb_rating) else 7.0
+                        imdb_factor = (imdb_rating / 10.0) * 0.5 + 0.5  # Scale IMDB rating influence
+                        
+                        score = rating * similarity * user_weight * imdb_factor
+                        movie_scores[movie_title] += score
     
-    # Sort by combined score (high to low)
-    recommendations = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    
-    if not recommendations:
+    if not movie_scores:
         return collaborative_filtering_enhanced_fallback(merged_df, target_movie, top_n)
     
-    rec_titles = [rec[0] for rec in recommendations]
-    result_df = merged_df[merged_df['Series_Title'].isin(rec_titles)]
+    # Sort by combined score (high to low)
+    recommendations = sorted(movie_scores.items(), key=lambda x: x[1], reverse=True)[:top_n * 2]
     
-    # Sort by IMDB rating (high to low) as secondary sort
+    # Get result dataframe and sort by IMDB rating
+    rec_titles = [rec[0] for rec in recommendations[:top_n * 2]]
+    result_df = merged_df[merged_df['Series_Title'].isin(rec_titles)]
     result_df = result_df.sort_values(by=rating_col, ascending=False)
     
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
@@ -263,20 +265,9 @@ def collaborative_filtering_enhanced_fallback(merged_df, target_movie, top_n=5):
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
     return result_df[['Series_Title', genre_col, rating_col]].head(top_n)
 
-# Legacy functions for backward compatibility
-@st.cache_data
-def create_user_item_matrix(merged_df):
-    """Legacy function - redirects to synthetic matrix creation"""
-    return create_user_item_matrix_synthetic(merged_df)
-
-@st.cache_data
-def collaborative_filtering_knn(merged_df, target_movie, top_n=5, n_neighbors=5):
-    """Legacy function - redirects to new implementation"""
-    user_ratings_df = load_user_ratings()
-    return collaborative_filtering_with_real_data(merged_df, target_movie, user_ratings_df, top_n, n_neighbors)
-
+# Main functions for the simplified interface
 @st.cache_data
 def collaborative_filtering_enhanced(merged_df, target_movie, top_n=5):
-    """Legacy function - redirects to new implementation"""
+    """Main collaborative filtering function using KNN"""
     user_ratings_df = load_user_ratings()
-    return collaborative_filtering_with_real_data(merged_df, target_movie, user_ratings_df, top_n)
+    return collaborative_filtering_knn(merged_df, target_movie, user_ratings_df, top_n, n_neighbors=10)
