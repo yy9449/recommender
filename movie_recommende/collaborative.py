@@ -8,6 +8,72 @@ from content_based import find_similar_titles
 import os
 
 @st.cache_data
+def diagnose_data_linking(merged_df, user_ratings_df):
+    """Diagnostic function to understand data linking between datasets"""
+    if user_ratings_df is None:
+        st.warning("No user ratings data available for diagnosis")
+        return
+    
+    st.subheader("🔍 Data Linking Diagnosis")
+    
+    # Check columns
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Movies Dataset (merged_df):**")
+        st.write(f"- Total movies: {len(merged_df)}")
+        st.write(f"- Columns: {list(merged_df.columns)}")
+        if 'Movie_ID' in merged_df.columns:
+            movie_id_range = f"{merged_df['Movie_ID'].min()} - {merged_df['Movie_ID'].max()}"
+            st.write(f"- Movie_ID range: {movie_id_range}")
+            st.write(f"- Unique Movie_IDs: {merged_df['Movie_ID'].nunique()}")
+        else:
+            st.error("❌ No Movie_ID column found in movies dataset")
+    
+    with col2:
+        st.write("**User Ratings Dataset:**")
+        st.write(f"- Total ratings: {len(user_ratings_df)}")
+        st.write(f"- Columns: {list(user_ratings_df.columns)}")
+        st.write(f"- Unique users: {user_ratings_df['User_ID'].nunique()}")
+        st.write(f"- Unique movies rated: {user_ratings_df['Movie_ID'].nunique()}")
+        rating_range = f"{user_ratings_df['Movie_ID'].min()} - {user_ratings_df['Movie_ID'].max()}"
+        st.write(f"- Movie_ID range: {rating_range}")
+        st.write(f"- Rating range: {user_ratings_df['Rating'].min()} - {user_ratings_df['Rating'].max()}")
+    
+    # Check overlap
+    if 'Movie_ID' in merged_df.columns:
+        movies_set = set(merged_df['Movie_ID'])
+        ratings_set = set(user_ratings_df['Movie_ID'])
+        overlap = movies_set & ratings_set
+        
+        st.write("**🔗 Data Overlap Analysis:**")
+        st.write(f"- Movies in both datasets: {len(overlap)} / {len(movies_set)} movies")
+        st.write(f"- Coverage: {(len(overlap) / len(movies_set)) * 100:.1f}% of movie dataset")
+        st.write(f"- User ratings for available movies: {len(user_ratings_df[user_ratings_df['Movie_ID'].isin(overlap)])}")
+        
+        if len(overlap) == 0:
+            st.error("❌ No Movie_ID overlap found! Check that Movie_ID values match between files.")
+        elif len(overlap) < len(movies_set) * 0.1:
+            st.warning(f"⚠️ Very low overlap ({len(overlap)} movies). This may limit collaborative filtering effectiveness.")
+        else:
+            st.success(f"✅ Good overlap found: {len(overlap)} movies with user ratings available.")
+        
+        # Show sample Movie_IDs from each dataset
+        with st.expander("🔍 Sample Movie_ID Values"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**First 10 Movie_IDs in movies dataset:**")
+                st.write(sorted(list(movies_set))[:10])
+            with col2:
+                st.write("**First 10 Movie_IDs in user ratings:**")
+                st.write(sorted(list(ratings_set))[:10])
+            
+            if overlap:
+                st.write("**Sample overlapping Movie_IDs:**")
+                st.write(sorted(list(overlap))[:10])
+
+# Updated load_user_ratings function with diagnosis
+@st.cache_data
 def load_user_ratings():
     """Load real user ratings from CSV file or session state"""
     try:
@@ -392,64 +458,84 @@ def user_based_collaborative_filtering_enhanced(merged_df, target_movie, user_ra
 
 @st.cache_data
 def create_user_item_matrix_from_real_data(merged_df, user_ratings_df):
-    """Create user-item matrix from real user rating data - same as before"""
+    """Create user-item matrix from real user rating data using Movie_ID mapping"""
     if user_ratings_df is None:
         return create_synthetic_user_profiles_enhanced(merged_df)
     
     try:
-        st.info(f"📊 Processing user ratings: {len(user_ratings_df)} ratings from {user_ratings_df['User_ID'].nunique()} users")
+        st.info(f"📊 Processing real user ratings: {len(user_ratings_df)} ratings from {user_ratings_df['User_ID'].nunique()} users")
         
-        # Create a mapping between Movie_ID and our merged_df
-        movie_id_to_index = {}
-        
-        # Try different approaches to map Movie_ID to our dataset
-        if 'Movie_ID' in merged_df.columns:
-            # Direct Movie_ID mapping
-            movie_id_to_index = dict(zip(merged_df['Movie_ID'], merged_df.index))
-        else:
-            # Use index as Movie_ID (common approach)
-            movie_id_to_index = dict(zip(range(len(merged_df)), merged_df.index))
-        
-        # Filter user ratings to only include movies in our dataset
-        valid_movie_ids = set(movie_id_to_index.keys())
-        filtered_ratings = user_ratings_df[user_ratings_df['Movie_ID'].isin(valid_movie_ids)].copy()
-        
-        if filtered_ratings.empty:
-            st.warning("⚠️ No matching movies found between user ratings and movie dataset")
-            st.info("💡 Make sure Movie_ID in user_movie_rating.csv corresponds to movie indices in your dataset")
+        # Check if merged_df has Movie_ID column (from movies.csv)
+        if 'Movie_ID' not in merged_df.columns:
+            st.error("❌ Movie_ID column not found in merged dataset. Make sure movies.csv is properly loaded with Movie_ID column.")
             return create_synthetic_user_profiles_enhanced(merged_df)
         
-        st.success(f"✅ Successfully matched {len(filtered_ratings)} ratings with movies in dataset")
+        # Create mapping from Movie_ID to dataset row indices
+        movie_id_to_index = dict(zip(merged_df['Movie_ID'], merged_df.index))
         
-        # Map Movie_ID to our dataset indices
+        # Filter user ratings to only include movies that exist in our dataset
+        valid_movie_ids = set(movie_id_to_index.keys())
+        user_movie_ids = set(user_ratings_df['Movie_ID'].unique())
+        
+        st.info(f"🔍 Movies in dataset: {len(valid_movie_ids)}, Movies in user ratings: {len(user_movie_ids)}")
+        
+        # Find intersection
+        common_movie_ids = valid_movie_ids & user_movie_ids
+        if not common_movie_ids:
+            st.error("❌ No common Movie_IDs found between movies.csv and user_movie_rating.csv")
+            st.info("💡 Check that Movie_ID values match between the two files")
+            return create_synthetic_user_profiles_enhanced(merged_df)
+        
+        st.success(f"✅ Found {len(common_movie_ids)} movies common to both datasets")
+        
+        # Filter ratings to common movies only
+        filtered_ratings = user_ratings_df[user_ratings_df['Movie_ID'].isin(common_movie_ids)].copy()
+        
+        # Map Movie_ID to dataset row indices
         filtered_ratings['dataset_index'] = filtered_ratings['Movie_ID'].map(movie_id_to_index)
         
-        # Create user-item matrix using dataset indices
-        user_movie_matrix = filtered_ratings.pivot(
+        # Remove any rows where mapping failed
+        filtered_ratings = filtered_ratings.dropna(subset=['dataset_index'])
+        filtered_ratings['dataset_index'] = filtered_ratings['dataset_index'].astype(int)
+        
+        st.success(f"✅ Successfully mapped {len(filtered_ratings)} ratings to dataset indices")
+        
+        # Create user-item matrix with dataset indices as columns
+        user_movie_matrix = filtered_ratings.pivot_table(
             index='User_ID', 
             columns='dataset_index', 
-            values='Rating'
-        ).fillna(0)
+            values='Rating',
+            fill_value=0
+        )
         
-        # Ensure the matrix covers all movies in our dataset
-        all_indices = list(range(len(merged_df)))
-        missing_movies = set(all_indices) - set(user_movie_matrix.columns)
+        # Ensure matrix covers all movies in dataset (fill missing movies with 0)
+        all_dataset_indices = list(range(len(merged_df)))
+        missing_indices = set(all_dataset_indices) - set(user_movie_matrix.columns)
         
-        for movie_idx in missing_movies:
-            user_movie_matrix[movie_idx] = 0
+        for idx in missing_indices:
+            user_movie_matrix[idx] = 0
         
-        # Reorder columns to match merged_df order
-        user_movie_matrix = user_movie_matrix.reindex(columns=all_indices, fill_value=0)
+        # Reorder columns to match dataset order
+        user_movie_matrix = user_movie_matrix.reindex(columns=all_dataset_indices, fill_value=0)
         
+        # Convert to numpy array and create user names
         rating_matrix = user_movie_matrix.values
         user_names = [f"User_{uid}" for uid in user_movie_matrix.index]
         
-        st.success(f"🎯 Created user-item matrix: {len(user_names)} users × {len(all_indices)} movies")
+        # Calculate and display statistics
+        non_zero_ratings = np.count_nonzero(rating_matrix)
+        total_possible = rating_matrix.size
+        sparsity = (1 - (non_zero_ratings / total_possible)) * 100
+        avg_rating = filtered_ratings['Rating'].mean()
+        
+        st.success(f"🎯 Created user-item matrix: {len(user_names)} users × {len(all_dataset_indices)} movies")
+        st.info(f"📈 Matrix stats: {non_zero_ratings:,} ratings ({sparsity:.1f}% sparse), avg rating: {avg_rating:.2f}")
         
         return rating_matrix, user_names
         
     except Exception as e:
         st.error(f"Error processing user ratings: {str(e)}")
+        st.info("🔄 Falling back to enhanced synthetic user data")
         return create_synthetic_user_profiles_enhanced(merged_df)
 
 # Main interface function
