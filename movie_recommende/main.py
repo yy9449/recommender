@@ -466,27 +466,6 @@ def main():
                     
                     match_percentage = (genre_matches / len(results)) * 100
                     st.info(f"📊 {genre_matches}/{len(results)} recommendations ({match_percentage:.1f}%) match your selected genre '{genre_input}'")
-                
-                # Show collaborative filtering effectiveness if used
-                if algorithm in ["Collaborative Filtering", "Hybrid"]:
-                    user_ratings_df = load_user_ratings()
-                    if user_ratings_df is not None:
-                        st.subheader("🤝 Collaborative Filtering Analysis")
-                        st.success("Using real user rating data for collaborative recommendations!")
-                        
-                        # Show some stats about the user data being used
-                        if 'Movie_ID' in merged_df.columns and movie_title:
-                            selected_movie = merged_df[merged_df['Series_Title'] == movie_title]
-                            if not selected_movie.empty:
-                                movie_id = selected_movie.iloc[0]['Movie_ID']
-                                user_ratings_for_movie = user_ratings_df[user_ratings_df['Movie_ID'] == movie_id]
-                                if not user_ratings_for_movie.empty:
-                                    avg_user_rating = user_ratings_for_movie['Rating'].mean()
-                                    num_user_ratings = len(user_ratings_for_movie)
-                                    st.info(f"📊 '{movie_title}' has {num_user_ratings} user ratings (avg: {avg_user_rating:.1f}/5)")
-                    else:
-                        st.subheader("🤖 Enhanced Collaborative Filtering")
-                        st.info("Using sophisticated synthetic user profiles and item-based similarity for collaborative recommendations.")
             
             else:
                 st.error("❌ No recommendations found. Try different inputs or algorithms.")
