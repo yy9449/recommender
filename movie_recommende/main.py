@@ -321,7 +321,121 @@ def main():
                 elif movie_title:
                     algorithm_info = "Hybrid System combines KNN Collaborative Filtering (60%) + Cosine Similarity Content-Based Filtering (40%) for enhanced accuracy."
                 else:
-                    algorithm_info = "Content-Based Filtering with Cosine Similarity and enhanced genre weighting for optimal genre-based recommendations."input, top_n, use_both)
+                    algorithm_info = "Content-Based Filtering with Cosine Similarity and enhanced genre weighting for optimal genre-based recommendations."
+            
+            # Display results
+            if results is not None and not results.empty:
+                st.success(f"✅ Found {len(results)} recommendations!")
+                
+                # Algorithm info
+                st.info(f"🔬 **{algorithm}**: {algorithm_info}")
+                
+                # Results display
+                st.subheader("🎬 Recommended Movies")
+                
+                # Cinema-style poster display
+                display_movie_posters(results, merged_df)
+                
+                # Optional: Show detailed table
+                with st.expander("📊 View Detailed Information", expanded=False):
+                    # Format the results for better display
+                    display_results = results.copy()
+                    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
+                    genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre'
+                    
+                    display_results = display_results.rename(columns={
+                        'Series_Title': 'Movie Title',
+                        genre_col: 'Genre',
+                        rating_col: 'IMDB Rating'
+                    })
+                    
+                    # Add ranking
+                    display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
+                    
+                    st.dataframe(
+                        display_results,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                            "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
+                            "Genre": st.column_config.TextColumn("Genre", width="medium"),
+                            "IMDB Rating": st.column_config.NumberColumn("IMDB Rating", format="%.1f⭐")
+                        }
+                    )
+                
+                # Enhanced insights
+                st.subheader("📈 Recommendation Insights")
+                
+                # Create columns for metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    avg_rating = results[rating_col].mean()
+                    st.metric("Average Rating", f"{avg_rating:.1f}⭐")
+                
+                with col2:
+                    total_movies = len(results)
+                    st.metric("Total Recommendations", total_movies)
+                
+                with col3:
+                    # Highest rated movie
+                    max_rating = results[rating_col].max()
+                    st.metric("Highest Rating", f"{max_rating:.1f}⭐")
+                
+                with col4:
+                    # Most common genre
+                    genres_list = []
+                    for genre_str in results[genre_col].dropna():
+                        genres_list.extend([g.strip() for g in str(genre_str).split(',')])
+                    
+                    if genres_list:
+                        most_common_genre = pd.Series(genres_list).mode().iloc[0] if len(pd.Series(genres_list).mode()) > 0 else "Various"
+                        st.metric("Top Genre", most_common_genre)
+                
+                # Genre and rating distribution
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if genres_list:
+                        st.subheader("🎭 Genre Distribution")
+                        genre_counts = pd.Series(genres_list).value_counts().head(8)
+                        st.bar_chart(genre_counts)
+                
+                with col2:
+                    st.subheader("⭐ Rating Distribution")
+                    rating_bins = pd.cut(results[rating_col], bins=5, labels=['Low', 'Below Avg', 'Average', 'Above Avg', 'High'])
+                    rating_dist = rating_bins.value_counts()
+                    st.bar_chart(rating_dist)
+                
+                # Show input combination effect if both were used
+                if movie_title and genre_input:
+                    st.subheader("🎯 Input Combination Analysis")
+                    st.success(f"Using both '{movie_title}' and '{genre_input}' genre for enhanced precision!")
+                    
+                    # Show genre matching in results
+                    genre_matches = 0
+                    for _, row in results.iterrows():
+                        if genre_input.lower() in str(row[genre_col]).lower():
+                            genre_matches += 1
+                    
+                    match_percentage = (genre_matches / len(results)) * 100
+                    st.info(f"📊 {genre_matches}/{len(results)} recommendations ({match_percentage:.1f}%) match your selected genre '{genre_input}'")
+            
+            else:
+                st.error("❌ No recommendations found. Try different inputs or algorithms.")
+                
+                # Provide suggestions
+                st.subheader("💡 Suggestions:")
+                if movie_title and not genre_input:
+                    st.write("- Try adding a genre preference")
+                    st.write("- Try a different algorithm (Content-Based might work better)")
+                elif genre_input and not movie_title:
+                    st.write("- Try selecting a movie you like")
+                    st.write("- Try a more common genre")
+                else:
+                    st.write("- Check if the movie title is spelled correctly")
+                    st.write("- Try selecting from the dropdown instead of typing")input, top_n, use_both)
                 algorithm_info = "Manual Hybrid allows you to control the combination of Content-Based and Collaborative approaches."
                 
             else:  # Smart Hybrid (default)
@@ -334,7 +448,7 @@ def main():
                     algorithm_info = "Smart Hybrid uses enhanced Content-Based filtering with genre weighting and rating prioritization."
             
             # Sort by rating if requested
-            if results is not None and sort_by_rating:
+            if results is not None:
                 rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
                 results = results.sort_values(by=rating_col, ascending=False)
             
