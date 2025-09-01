@@ -68,8 +68,6 @@ def load_and_prepare_data():
         user_ratings_df = load_user_ratings()
         if user_ratings_df is not None:
             st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}, User Ratings: {len(user_ratings_df)}")
-            # Run diagnosis if both datasets are available
-            diagnose_data_linking(merged_df, user_ratings_df)
         else:
             st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}")
         
@@ -121,10 +119,6 @@ def load_data_with_uploader():
                 merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
             
             st.success(f"✅ Data loaded successfully! Merged dataset: {len(merged_df)} movies")
-            
-            # Run diagnosis if user ratings are available
-            if user_ratings_df is not None:
-                diagnose_data_linking(merged_df, user_ratings_df)
             
             return merged_df, None
             
@@ -508,52 +502,6 @@ def main():
                 else:
                     st.write("- Check if the movie title is spelled correctly")
                     st.write("- Try selecting from the dropdown instead of typing")
-    
-    # Enhanced dataset info
-    with st.expander("📊 Enhanced Dataset Information"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**Total Movies:** {len(merged_df)}")
-            
-            if 'Movie_ID' in merged_df.columns:
-                st.write(f"**Movie ID Range:** {merged_df['Movie_ID'].min()} - {merged_df['Movie_ID'].max()}")
-                st.write(f"**Unique Movie IDs:** {merged_df['Movie_ID'].nunique()}")
-            
-            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-            if rating_col in merged_df.columns:
-                avg_rating = merged_df[rating_col].mean()
-                max_rating = merged_df[rating_col].max()
-                min_rating = merged_df[rating_col].min()
-                st.write(f"**Average Rating:** {avg_rating:.1f}⭐")
-                st.write(f"**Rating Range:** {min_rating:.1f} - {max_rating:.1f}")
-            
-            # Check for user ratings
-            user_ratings_df = load_user_ratings()
-            if user_ratings_df is not None:
-                st.write(f"**User Ratings Available:** ✅")
-                st.write(f"**Total User Ratings:** {len(user_ratings_df)}")
-                st.write(f"**Unique Users:** {user_ratings_df['User_ID'].nunique()}")
-                
-                # Show overlap stats
-                if 'Movie_ID' in merged_df.columns:
-                    movie_overlap = len(set(merged_df['Movie_ID']) & set(user_ratings_df['Movie_ID']))
-                    coverage = (movie_overlap / len(merged_df)) * 100
-                    st.write(f"**Data Coverage:** {movie_overlap}/{len(merged_df)} movies ({coverage:.1f}%)")
-            else:
-                st.write(f"**User Ratings Available:** ❌ (Using enhanced synthetic data)")
-        
-        with col2:
-            # Top genres
-            all_genres = []
-            for genre_str in merged_df[genre_col].dropna():
-                if isinstance(genre_str, str):
-                    all_genres.extend([g.strip() for g in genre_str.split(',')])
-            
-            if all_genres:
-                genre_counts = pd.Series(all_genres).value_counts()
-                st.write("**Top Genres:**")
-                st.bar_chart(genre_counts.head(10))
 
 if __name__ == "__main__":
     main()
