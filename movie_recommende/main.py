@@ -4,7 +4,7 @@ import numpy as np
 import warnings
 import os
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings
+from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -50,14 +50,26 @@ def load_and_prepare_data():
         if movies_df is None or imdb_df is None:
             return None, "CSV files not found"
         
+        # Check if movies.csv has Movie_ID
+        if 'Movie_ID' not in movies_df.columns:
+            st.warning("⚠️ Movie_ID column not found in movies.csv. Adding sequential Movie_IDs.")
+            movies_df['Movie_ID'] = range(len(movies_df))
+        
         # Merge on Series_Title
         merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
         merged_df = merged_df.drop_duplicates(subset="Series_Title")
+        
+        # Ensure Movie_ID is preserved in merged dataset
+        if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
+            # Re-merge to preserve Movie_ID
+            merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
         
         # Load user ratings data
         user_ratings_df = load_user_ratings()
         if user_ratings_df is not None:
             st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}, User Ratings: {len(user_ratings_df)}")
+            # Run diagnosis if both datasets are available
+            diagnose_data_linking(merged_df, user_ratings_df)
         else:
             st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}")
         
@@ -87,7 +99,13 @@ def load_data_with_uploader():
             movies_df = pd.read_csv(movies_file)
             imdb_df = pd.read_csv(imdb_file)
             
+            # Check if movies.csv has Movie_ID
+            if 'Movie_ID' not in movies_df.columns:
+                st.warning("⚠️ Movie_ID column not found in movies.csv. Adding sequential Movie_IDs.")
+                movies_df['Movie_ID'] = range(len(movies_df))
+            
             # Handle user ratings if provided
+            user_ratings_df = None
             if ratings_file is not None:
                 user_ratings_df = pd.read_csv(ratings_file)
                 # Store in session state for later use
@@ -98,7 +116,16 @@ def load_data_with_uploader():
             merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
             merged_df = merged_df.drop_duplicates(subset="Series_Title")
             
+            # Ensure Movie_ID is preserved
+            if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
+                merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
+            
             st.success(f"✅ Data loaded successfully! Merged dataset: {len(merged_df)} movies")
+            
+            # Run diagnosis if user ratings are available
+            if user_ratings_df is not None:
+                diagnose_data_linking(merged_df, user_ratings_df)
+            
             return merged_df, None
             
         except Exception as e:
@@ -219,7 +246,7 @@ def main():
            - `movies.csv` and `imdb_top_1000.csv` (required)
            - `user_movie_rating.csv` (optional, for real user data)
         3. **File Structure**: Make sure CSV files have the required columns:
-           - movies.csv should have 'Series_Title' column
+           - movies.csv should have 'Movie_ID', 'Series_Title' columns
            - imdb_top_1000.csv should have 'Series_Title', 'Genre_y', 'IMDB_Rating' columns
            - user_movie_rating.csv should have 'User_ID', 'Movie_ID', 'Rating' columns
         """)
@@ -229,7 +256,7 @@ def main():
     st.sidebar.header("🎯 Recommendation Settings")
     
     # New input method - can select both movie and genre
-    st.sidebar.subheader("📝 Input Selection")
+    st.sidebar.subheader("🔍 Input Selection")
     
     # Movie selection
     st.sidebar.markdown("**🎬 Movie Selection**")
@@ -275,6 +302,8 @@ def main():
             year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
             
             st.write(f"**🎬 {movie_title}**")
+            if 'Movie_ID' in movie_info.index:
+                st.write(f"**🆔 Movie ID:** {movie_info['Movie_ID']}")
             if genre_col in movie_info:
                 st.write(f"**🎭 Genre:** {movie_info[genre_col]}")
             if rating_col in movie_info:
@@ -308,17 +337,28 @@ def main():
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
                     results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
-                    algorithm_info = "Collaborative Filtering uses K-Nearest Neighbors (KNN) to analyze user behavior patterns and recommend movies liked by similar users."
+                    user_ratings_df = load_user_ratings()
+                    if user_ratings_df is not None:
+                        algorithm_info = "Collaborative Filtering uses real user ratings with K-Nearest Neighbors (KNN) to find users with similar preferences and recommend movies they liked."
+                    else:
+                        algorithm_info = "Collaborative Filtering uses enhanced synthetic user profiles and item-based similarity to recommend movies based on user behavior patterns."
                 else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
             
             else:  # Hybrid
                 results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
+                user_ratings_df = load_user_ratings()
                 if movie_title and genre_input:
-                    algorithm_info = "Hybrid System combines KNN Collaborative Filtering (50%) + Cosine Similarity Content-Based on movie (25%) + Cosine Similarity Content-Based on genre (25%) for maximum accuracy."
+                    if user_ratings_df is not None:
+                        algorithm_info = "Hybrid System combines Real User-Based Collaborative Filtering (40%) + Content-Based on movie (30%) + Content-Based on genre (30%) using real user data for maximum accuracy."
+                    else:
+                        algorithm_info = "Hybrid System combines Enhanced Collaborative Filtering (50%) + Content-Based on movie (25%) + Content-Based on genre (25%) for optimal recommendations."
                 elif movie_title:
-                    algorithm_info = "Hybrid System combines KNN Collaborative Filtering (60%) + Cosine Similarity Content-Based Filtering (40%) for enhanced accuracy."
+                    if user_ratings_df is not None:
+                        algorithm_info = "Hybrid System combines Real User-Based Collaborative Filtering (60%) + Content-Based Filtering (40%) using authentic user preference data."
+                    else:
+                        algorithm_info = "Hybrid System combines Enhanced Collaborative Filtering (60%) + Content-Based Filtering (40%) for balanced accuracy."
                 else:
                     algorithm_info = "Content-Based Filtering with Cosine Similarity and enhanced genre weighting for optimal genre-based recommendations."
             
@@ -351,12 +391,24 @@ def main():
                     # Add ranking
                     display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
                     
+                    # Add Movie_ID if available
+                    if 'Movie_ID' in merged_df.columns:
+                        movie_ids = []
+                        for _, row in results.iterrows():
+                            movie_info = merged_df[merged_df['Series_Title'] == row['Series_Title']]
+                            if not movie_info.empty:
+                                movie_ids.append(movie_info.iloc[0]['Movie_ID'])
+                            else:
+                                movie_ids.append('N/A')
+                        display_results.insert(1, 'Movie ID', movie_ids)
+                    
                     st.dataframe(
                         display_results,
                         use_container_width=True,
                         hide_index=True,
                         column_config={
                             "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                            "Movie ID": st.column_config.NumberColumn("Movie ID", width="small"),
                             "Movie Title": st.column_config.TextColumn("Movie Title", width="large"),
                             "Genre": st.column_config.TextColumn("Genre", width="medium"),
                             "IMDB Rating": st.column_config.NumberColumn("IMDB Rating", format="%.1f⭐")
@@ -420,6 +472,27 @@ def main():
                     
                     match_percentage = (genre_matches / len(results)) * 100
                     st.info(f"📊 {genre_matches}/{len(results)} recommendations ({match_percentage:.1f}%) match your selected genre '{genre_input}'")
+                
+                # Show collaborative filtering effectiveness if used
+                if algorithm in ["Collaborative Filtering", "Hybrid"]:
+                    user_ratings_df = load_user_ratings()
+                    if user_ratings_df is not None:
+                        st.subheader("🤝 Collaborative Filtering Analysis")
+                        st.success("Using real user rating data for collaborative recommendations!")
+                        
+                        # Show some stats about the user data being used
+                        if 'Movie_ID' in merged_df.columns and movie_title:
+                            selected_movie = merged_df[merged_df['Series_Title'] == movie_title]
+                            if not selected_movie.empty:
+                                movie_id = selected_movie.iloc[0]['Movie_ID']
+                                user_ratings_for_movie = user_ratings_df[user_ratings_df['Movie_ID'] == movie_id]
+                                if not user_ratings_for_movie.empty:
+                                    avg_user_rating = user_ratings_for_movie['Rating'].mean()
+                                    num_user_ratings = len(user_ratings_for_movie)
+                                    st.info(f"📊 '{movie_title}' has {num_user_ratings} user ratings (avg: {avg_user_rating:.1f}/5)")
+                    else:
+                        st.subheader("🤖 Enhanced Collaborative Filtering")
+                        st.info("Using sophisticated synthetic user profiles and item-based similarity for collaborative recommendations.")
             
             else:
                 st.error("❌ No recommendations found. Try different inputs or algorithms.")
@@ -443,6 +516,10 @@ def main():
         with col1:
             st.write(f"**Total Movies:** {len(merged_df)}")
             
+            if 'Movie_ID' in merged_df.columns:
+                st.write(f"**Movie ID Range:** {merged_df['Movie_ID'].min()} - {merged_df['Movie_ID'].max()}")
+                st.write(f"**Unique Movie IDs:** {merged_df['Movie_ID'].nunique()}")
+            
             rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
             if rating_col in merged_df.columns:
                 avg_rating = merged_df[rating_col].mean()
@@ -457,8 +534,14 @@ def main():
                 st.write(f"**User Ratings Available:** ✅")
                 st.write(f"**Total User Ratings:** {len(user_ratings_df)}")
                 st.write(f"**Unique Users:** {user_ratings_df['User_ID'].nunique()}")
+                
+                # Show overlap stats
+                if 'Movie_ID' in merged_df.columns:
+                    movie_overlap = len(set(merged_df['Movie_ID']) & set(user_ratings_df['Movie_ID']))
+                    coverage = (movie_overlap / len(merged_df)) * 100
+                    st.write(f"**Data Coverage:** {movie_overlap}/{len(merged_df)} movies ({coverage:.1f}%)")
             else:
-                st.write(f"**User Ratings Available:** ❌ (Using synthetic data)")
+                st.write(f"**User Ratings Available:** ❌ (Using enhanced synthetic data)")
         
         with col2:
             # Top genres
