@@ -226,7 +226,7 @@ def main():
         st.stop()
 
     # Sidebar
-    st.sidebar.header("🎯 Enhanced Recommendation Settings")
+    st.sidebar.header("🎯 Recommendation Settings")
     
     # New input method - can select both movie and genre
     st.sidebar.subheader("📝 Input Selection")
