@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_with_real_data, load_user_ratings
+from collaborative import collaborative_filtering_enhanced, load_user_ratings
 
 @st.cache_data
 def hybrid_recommendation_enhanced(merged_df, target_movie=None, genre=None, top_n=5, use_both=False):
@@ -30,7 +30,7 @@ def hybrid_recommendation_enhanced(merged_df, target_movie=None, genre=None, top
         st.info("🔄 Using hybrid approach with both movie title and genre preferences")
         
         # 1. Collaborative filtering based on movie (40%)
-        collab_recs = collaborative_filtering_with_real_data(merged_df, target_movie, user_ratings_df, top_n * 2)
+        collab_recs = collaborative_filtering_enhanced(merged_df, target_movie, top_n * 2)
         if collab_recs is not None:
             for idx, row in collab_recs.iterrows():
                 title = row['Series_Title']
@@ -77,7 +77,7 @@ def hybrid_recommendation_enhanced(merged_df, target_movie=None, genre=None, top
         st.info("🎬 Using movie-based recommendations")
         
         # Collaborative filtering (60%)
-        collab_recs = collaborative_filtering_with_real_data(merged_df, target_movie, user_ratings_df, top_n * 2)
+        collab_recs = collaborative_filtering_enhanced(merged_df, target_movie, top_n * 2)
         if collab_recs is not None:
             for idx, row in collab_recs.iterrows():
                 title = row['Series_Title']
@@ -174,3 +174,10 @@ def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=
         return hybrid_recommendation_enhanced(merged_df, None, genre, top_n)
     else:
         return None
+
+@st.cache_data
+def hybrid_recommendation_system(merged_df, target_movie=None, genre=None, top_n=5):
+    """
+    Alias for smart_hybrid_recommendation for backward compatibility
+    """
+    return smart_hybrid_recommendation(merged_df, target_movie, genre, top_n)
