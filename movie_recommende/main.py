@@ -37,22 +37,19 @@ def load_and_prepare_data():
         for path in ["movies.csv", "./movies.csv", "data/movies.csv", "../movies.csv"]:
             if os.path.exists(path):
                 movies_df = pd.read_csv(path)
-                st.success(f"✅ Found movies.csv at: {path}")
                 break
         
         # Check for imdb_top_1000.csv
         for path in ["imdb_top_1000.csv", "./imdb_top_1000.csv", "data/imdb_top_1000.csv", "../imdb_top_1000.csv"]:
             if os.path.exists(path):
                 imdb_df = pd.read_csv(path)
-                st.success(f"✅ Found imdb_top_1000.csv at: {path}")
                 break
         
         if movies_df is None or imdb_df is None:
-            return None, "CSV files not found"
+            return None, "Required CSV files not found in project directory"
         
         # Check if movies.csv has Movie_ID
         if 'Movie_ID' not in movies_df.columns:
-            st.warning("⚠️ Movie_ID column not found in movies.csv. Adding sequential Movie_IDs.")
             movies_df['Movie_ID'] = range(len(movies_df))
         
         # Merge on Series_Title
@@ -64,68 +61,45 @@ def load_and_prepare_data():
             # Re-merge to preserve Movie_ID
             merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
         
-        # Load user ratings data
-        user_ratings_df = load_user_ratings()
-        if user_ratings_df is not None:
-            st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}, User Ratings: {len(user_ratings_df)}")
-        else:
-            st.info(f"📊 Dataset Info: Movies: {len(movies_df)}, IMDB: {len(imdb_df)}, Merged: {len(merged_df)}")
-        
         return merged_df, None
         
     except Exception as e:
         return None, str(e)
 
-def load_data_with_uploader():
-    """Alternative data loading with file uploader"""
-    st.warning("⚠️ CSV files not found in the project directory.")
-    st.info("👆 Please upload your CSV files using the file uploaders below:")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        movies_file = st.file_uploader("Upload movies.csv", type=['csv'], key="movies")
-    
-    with col2:
-        imdb_file = st.file_uploader("Upload imdb_top_1000.csv", type=['csv'], key="imdb")
-    
-    with col3:
-        ratings_file = st.file_uploader("Upload user_movie_rating.csv (Optional)", type=['csv'], key="ratings")
-    
-    if movies_file is not None and imdb_file is not None:
-        try:
-            movies_df = pd.read_csv(movies_file)
-            imdb_df = pd.read_csv(imdb_file)
+@st.cache_data  
+def load_user_ratings_silent():
+    """Silently load user ratings without UI messages"""
+    try:
+        # Check if user uploaded the file (stored in session state)
+        if 'user_ratings_df' in st.session_state:
+            user_ratings_df = st.session_state['user_ratings_df']
             
-            # Check if movies.csv has Movie_ID
-            if 'Movie_ID' not in movies_df.columns:
-                st.warning("⚠️ Movie_ID column not found in movies.csv. Adding sequential Movie_IDs.")
-                movies_df['Movie_ID'] = range(len(movies_df))
+            # Validate required columns
+            required_cols = ['User_ID', 'Movie_ID', 'Rating']
+            if all(col in user_ratings_df.columns for col in required_cols):
+                return user_ratings_df
+            else:
+                return None
+        
+        # If not in session state, try to find it in local filesystem
+        user_ratings_df = None
+        for path in ["user_movie_rating.csv", "./user_movie_rating.csv", "data/user_movie_rating.csv", "../user_movie_rating.csv"]:
+            if os.path.exists(path):
+                user_ratings_df = pd.read_csv(path)
+                break
+        
+        if user_ratings_df is not None:
+            # Validate required columns
+            required_cols = ['User_ID', 'Movie_ID', 'Rating']
+            if all(col in user_ratings_df.columns for col in required_cols):
+                return user_ratings_df
+            else:
+                return None
+        else:
+            return None
             
-            # Handle user ratings if provided
-            user_ratings_df = None
-            if ratings_file is not None:
-                user_ratings_df = pd.read_csv(ratings_file)
-                # Store in session state for later use
-                st.session_state['user_ratings_df'] = user_ratings_df
-                st.success("✅ User ratings file loaded successfully!")
-            
-            # Merge datasets
-            merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
-            merged_df = merged_df.drop_duplicates(subset="Series_Title")
-            
-            # Ensure Movie_ID is preserved
-            if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
-                merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
-            
-            st.success(f"✅ Data loaded successfully! Merged dataset: {len(merged_df)} movies")
-            
-            return merged_df, None
-            
-        except Exception as e:
-            return None, f"Error processing uploaded files: {str(e)}"
-    
-    return None, "Please upload both CSV files (movies.csv and imdb_top_1000.csv)"
+    except Exception as e:
+        return None
 
 def display_movie_posters(results_df, merged_df):
     """Display movie posters in cinema-style layout (5 columns per row)"""
@@ -224,27 +198,24 @@ def display_movie_posters(results_df, merged_df):
 # Main Application
 # =========================
 def main():
-    # Load data
+    # Load data from GitHub repository files
     merged_df, error = load_and_prepare_data()
-
-    if merged_df is None:
-        merged_df, error = load_data_with_uploader()
 
     # Stop execution if no data is available
     if merged_df is None:
-        st.error(f"❌ Error loading data: {error}")
-        st.info("🔧 **Quick Fix Instructions:**")
-        st.markdown("""
-        1. **Upload Files**: Use the file uploaders above
-        2. **Check File Names**: Ensure files are named exactly:
-           - `movies.csv` and `imdb_top_1000.csv` (required)
-           - `user_movie_rating.csv` (optional, for real user data)
-        3. **File Structure**: Make sure CSV files have the required columns:
-           - movies.csv should have 'Movie_ID', 'Series_Title' columns
-           - imdb_top_1000.csv should have 'Series_Title', 'Genre_y', 'IMDB_Rating' columns
-           - user_movie_rating.csv should have 'User_ID', 'Movie_ID', 'Rating' columns
+        st.error("Required dataset files not found in the project directory.")
+        st.info("""
+        **Expected Files:**
+        - `movies.csv`: Movie metadata with Movie_ID and Series_Title columns
+        - `imdb_top_1000.csv`: IMDB movie data with ratings and genres
+        - `user_movie_rating.csv`: Optional user ratings file
+        
+        Please ensure these files are available in the project directory.
         """)
         st.stop()
+
+    # Silent check for user ratings availability
+    user_ratings_available = load_user_ratings_silent() is not None
 
     # Sidebar
     st.sidebar.header("🎯 Recommendation Settings")
@@ -314,55 +285,34 @@ def main():
     # Number of recommendations
     top_n = st.sidebar.slider("📊 Number of Recommendations:", 3, 15, 8)
     
+    # Show data source info
+    if user_ratings_available:
+        st.sidebar.success("💾 Using real user rating data")
+    else:
+        st.sidebar.info("🤖 Using synthetic user profiles")
+    
     # Generate button
     if st.sidebar.button("🚀 Generate Recommendations", type="primary"):
         if not movie_title and not genre_input:
             st.error("❌ Please provide either a movie title or select a genre!")
             return
         
-        with st.spinner("🎬 Generating recommendations using advanced algorithms..."):
+        with st.spinner("🎬 Generating personalized recommendations..."):
             results = None
-            algorithm_info = ""
             
             if algorithm == "Content-Based":
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
-                algorithm_info = "Content-Based Filtering uses Cosine Similarity to analyze movie features like genre, director, year, and rating to find similar movies."
-            
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
                     results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
-                    user_ratings_df = load_user_ratings()
-                    if user_ratings_df is not None:
-                        algorithm_info = "Collaborative Filtering uses real user ratings with K-Nearest Neighbors (KNN) to find users with similar preferences and recommend movies they liked."
-                    else:
-                        algorithm_info = "Collaborative Filtering uses enhanced synthetic user profiles and item-based similarity to recommend movies based on user behavior patterns."
                 else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
-            
             else:  # Hybrid
                 results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
-                user_ratings_df = load_user_ratings()
-                if movie_title and genre_input:
-                    if user_ratings_df is not None:
-                        algorithm_info = "Hybrid System combines Real User-Based Collaborative Filtering (40%) + Content-Based on movie (30%) + Content-Based on genre (30%) using real user data for maximum accuracy."
-                    else:
-                        algorithm_info = "Hybrid System combines Enhanced Collaborative Filtering (50%) + Content-Based on movie (25%) + Content-Based on genre (25%) for optimal recommendations."
-                elif movie_title:
-                    if user_ratings_df is not None:
-                        algorithm_info = "Hybrid System combines Real User-Based Collaborative Filtering (60%) + Content-Based Filtering (40%) using authentic user preference data."
-                    else:
-                        algorithm_info = "Hybrid System combines Enhanced Collaborative Filtering (60%) + Content-Based Filtering (40%) for balanced accuracy."
-                else:
-                    algorithm_info = "Content-Based Filtering with Cosine Similarity and enhanced genre weighting for optimal genre-based recommendations."
             
             # Display results
             if results is not None and not results.empty:
-                st.success(f"✅ Found {len(results)} recommendations!")
-                
-                # Algorithm info
-                st.info(f"🔬 **{algorithm}**: {algorithm_info}")
-                
                 # Results display
                 st.subheader("🎬 Recommended Movies")
                 
@@ -456,7 +406,6 @@ def main():
                 # Show input combination effect if both were used
                 if movie_title and genre_input:
                     st.subheader("🎯 Input Combination Analysis")
-                    st.success(f"Using both '{movie_title}' and '{genre_input}' genre for enhanced precision!")
                     
                     # Show genre matching in results
                     genre_matches = 0
