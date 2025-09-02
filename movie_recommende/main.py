@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import warnings
-import os
+import requests
+import io
 from content_based import content_based_filtering_enhanced
 from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
 from hybrid import smart_hybrid_recommendation
@@ -23,15 +24,111 @@ st.title("🎬 Movie Recommendation System")
 st.markdown("---")
 
 # =========================
-# Data Loading with Error Handling
+# GitHub CSV Loading Functions
 # =========================
 @st.cache_data
-def load_and_prepare_data():
-    """Load CSVs and prepare data for recommendation algorithms"""
+def load_csv_from_github(file_url, file_name):
+    """Load CSV file from GitHub repository"""
     try:
+        response = requests.get(file_url, timeout=30)
+        response.raise_for_status()
+        
+        # Read CSV from response content
+        csv_content = io.StringIO(response.text)
+        df = pd.read_csv(csv_content)
+        
+        st.success(f"✅ Successfully loaded {file_name} ({len(df)} rows)")
+        return df
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Failed to load {file_name} from GitHub: {str(e)}")
+        return None
+    except pd.errors.EmptyDataError:
+        st.error(f"❌ {file_name} is empty or corrupted")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error processing {file_name}: {str(e)}")
+        return None
+
+@st.cache_data
+def load_and_prepare_data():
+    """Load CSVs from GitHub and prepare data for recommendation algorithms"""
+    
+    # GitHub raw file URLs - replace with your actual repository URLs
+    github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/movie_recommende/main/"
+    
+    # File URLs
+    movies_url = github_base_url + "movies.csv"
+    imdb_url = github_base_url + "imdb_top_1000.csv"
+    user_ratings_url = github_base_url + "user_movie_rating.csv"
+    
+    st.info("📥 Loading datasets from GitHub repository...")
+    
+    # Create columns for loading progress
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.write("**Loading movies.csv...**")
+        movies_df = load_csv_from_github(movies_url, "movies.csv")
+    
+    with col2:
+        st.write("**Loading imdb_top_1000.csv...**")
+        imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
+    
+    with col3:
+        st.write("**Loading user_movie_rating.csv...**")
+        user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
+    
+    # Check if required files loaded successfully
+    if movies_df is None or imdb_df is None:
+        return None, None, "❌ Required CSV files (movies.csv, imdb_top_1000.csv) could not be loaded from GitHub"
+    
+    # Store user ratings in session state for other functions to access
+    if user_ratings_df is not None:
+        st.session_state['user_ratings_df'] = user_ratings_df
+        st.success("✅ User ratings data loaded and available for collaborative filtering")
+    else:
+        st.warning("⚠️ user_movie_rating.csv not available - will use synthetic user data")
+        if 'user_ratings_df' in st.session_state:
+            del st.session_state['user_ratings_df']
+    
+    try:
+        # Validate required columns
+        if 'Series_Title' not in movies_df.columns or 'Series_Title' not in imdb_df.columns:
+            return None, None, "❌ Missing Series_Title column in one or both datasets"
+        
+        # Check if movies.csv has Movie_ID
+        if 'Movie_ID' not in movies_df.columns:
+            movies_df['Movie_ID'] = range(len(movies_df))
+            st.info("ℹ️ Added Movie_ID column to movies dataset")
+        
+        # Merge on Series_Title
+        merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
+        merged_df = merged_df.drop_duplicates(subset="Series_Title")
+        
+        # Ensure Movie_ID is preserved in merged dataset
+        if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
+            # Re-merge to preserve Movie_ID
+            merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
+        
+        st.success(f"✅ Successfully merged datasets: {len(merged_df)} movies available")
+        
+        return merged_df, user_ratings_df, None
+        
+    except Exception as e:
+        return None, None, f"❌ Error merging datasets: {str(e)}"
+
+# Alternative: Try local files if GitHub fails
+@st.cache_data
+def load_local_fallback():
+    """Fallback to load local files if GitHub loading fails"""
+    try:
+        import os
+        
         # Try different possible file paths
         movies_df = None
         imdb_df = None
+        user_ratings_df = None
         
         # Check for movies.csv
         for path in ["movies.csv", "./movies.csv", "data/movies.csv", "../movies.csv"]:
@@ -45,8 +142,18 @@ def load_and_prepare_data():
                 imdb_df = pd.read_csv(path)
                 break
         
+        # Check for user_movie_rating.csv
+        for path in ["user_movie_rating.csv", "./user_movie_rating.csv", "data/user_movie_rating.csv", "../user_movie_rating.csv"]:
+            if os.path.exists(path):
+                user_ratings_df = pd.read_csv(path)
+                break
+        
         if movies_df is None or imdb_df is None:
-            return None, "Required CSV files not found in project directory"
+            return None, None, "Required CSV files not found locally either"
+        
+        # Store user ratings in session state
+        if user_ratings_df is not None:
+            st.session_state['user_ratings_df'] = user_ratings_df
         
         # Check if movies.csv has Movie_ID
         if 'Movie_ID' not in movies_df.columns:
@@ -58,48 +165,12 @@ def load_and_prepare_data():
         
         # Ensure Movie_ID is preserved in merged dataset
         if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
-            # Re-merge to preserve Movie_ID
             merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
         
-        return merged_df, None
+        return merged_df, user_ratings_df, None
         
     except Exception as e:
-        return None, str(e)
-
-@st.cache_data  
-def load_user_ratings_silent():
-    """Silently load user ratings without UI messages"""
-    try:
-        # Check if user uploaded the file (stored in session state)
-        if 'user_ratings_df' in st.session_state:
-            user_ratings_df = st.session_state['user_ratings_df']
-            
-            # Validate required columns
-            required_cols = ['User_ID', 'Movie_ID', 'Rating']
-            if all(col in user_ratings_df.columns for col in required_cols):
-                return user_ratings_df
-            else:
-                return None
-        
-        # If not in session state, try to find it in local filesystem
-        user_ratings_df = None
-        for path in ["user_movie_rating.csv", "./user_movie_rating.csv", "data/user_movie_rating.csv", "../user_movie_rating.csv"]:
-            if os.path.exists(path):
-                user_ratings_df = pd.read_csv(path)
-                break
-        
-        if user_ratings_df is not None:
-            # Validate required columns
-            required_cols = ['User_ID', 'Movie_ID', 'Rating']
-            if all(col in user_ratings_df.columns for col in required_cols):
-                return user_ratings_df
-            else:
-                return None
-        else:
-            return None
-            
-    except Exception as e:
-        return None
+        return None, None, str(e)
 
 def display_movie_posters(results_df, merged_df):
     """Display movie posters in cinema-style layout (5 columns per row)"""
@@ -198,24 +269,65 @@ def display_movie_posters(results_df, merged_df):
 # Main Application
 # =========================
 def main():
-    # Load data from GitHub repository files
-    merged_df, error = load_and_prepare_data()
-
-    # Stop execution if no data is available
+    # Load data from GitHub repository first, then fallback to local
+    merged_df, user_ratings_df, error = load_and_prepare_data()
+    
+    # If GitHub loading failed, try local fallback
     if merged_df is None:
-        st.error("Required dataset files not found in the project directory.")
-        st.info("""
-        **Expected Files:**
-        - `movies.csv`: Movie metadata with Movie_ID and Series_Title columns
-        - `imdb_top_1000.csv`: IMDB movie data with ratings and genres
-        - `user_movie_rating.csv`: Optional user ratings file
+        st.warning("⚠️ GitHub loading failed, trying local files...")
+        merged_df, user_ratings_df, local_error = load_local_fallback()
         
-        Please ensure these files are available in the project directory.
-        """)
-        st.stop()
+        if merged_df is None:
+            st.error("❌ Could not load datasets from GitHub or local files.")
+            
+            # Show detailed error info
+            with st.expander("🔍 Error Details"):
+                st.write("**GitHub Error:**", error if error else "Unknown error")
+                st.write("**Local Error:**", local_error if local_error else "Unknown error")
+            
+            st.info("""
+            **Setup Instructions:**
+            
+            **For GitHub Loading (Recommended):**
+            1. Update the GitHub URLs in the code with your actual repository details
+            2. Make sure your CSV files are in the main branch
+            3. Ensure the repository is public or accessible
+            
+            **Required Files:**
+            - `movies.csv`: Movie metadata with Movie_ID and Series_Title columns
+            - `imdb_top_1000.csv`: IMDB movie data with ratings and genres  
+            - `user_movie_rating.csv`: Optional user ratings file
+            
+            **GitHub URL Format:**
+            ```
+            https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO_NAME/main/FILENAME.csv
+            ```
+            """)
+            st.stop()
+    
+    st.success("🎉 All datasets loaded successfully!")
+    
+    # Show data summary
+    with st.expander("📊 Dataset Summary", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Movies", len(merged_df))
+        
+        with col2:
+            if user_ratings_df is not None:
+                st.metric("User Ratings", len(user_ratings_df))
+            else:
+                st.metric("User Data", "Synthetic")
+        
+        with col3:
+            if user_ratings_df is not None:
+                st.metric("Unique Users", user_ratings_df['User_ID'].nunique())
+            else:
+                st.metric("Algorithm Mode", "Enhanced")
 
     # Silent check for user ratings availability
-    user_ratings_available = load_user_ratings_silent() is not None
+    user_ratings_available = user_ratings_df is not None
 
     # Sidebar
     st.sidebar.header("🎯 Recommendation Settings")
