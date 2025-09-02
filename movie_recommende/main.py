@@ -55,7 +55,7 @@ def load_and_prepare_data():
     """Load CSVs from GitHub and prepare data for recommendation algorithms"""
     
     # GitHub raw file URLs - replace with your actual repository URLs
-    github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/movie_recommende/"
+    github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
     # File URLs
     movies_url = github_base_url + "movies.csv"
