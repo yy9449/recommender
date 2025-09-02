@@ -192,7 +192,7 @@ class ProductionHybridRecommender:
         return diverse_recommendations
     
     def recommend(self, target_movie=None, genre=None, top_n=8):
-        """Main recommendation method using production-quality hybrid approach"""
+        """Main recommendation method using production-quality hybrid approach - silent version"""
         if not target_movie and not genre:
             return None
         
@@ -203,15 +203,12 @@ class ProductionHybridRecommender:
         if target_movie and genre:
             # Both inputs - balanced approach
             content_weight = 0.65 if has_real_user_data else 0.75
-            st.info(f"Using Production Hybrid: {int(content_weight*100)}% Content + {int((1-content_weight)*100)}% Collaborative")
         elif target_movie:
             # Movie only - balanced
             content_weight = 0.60 if has_real_user_data else 0.70
-            st.info(f"Using Movie-Based Hybrid: {int(content_weight*100)}% Content + {int((1-content_weight)*100)}% Collaborative")
         else:
             # Genre only - content-heavy
             content_weight = 0.85
-            st.info("Using Genre-Based Content Filtering with Quality Enhancements")
         
         # Get recommendations from both algorithms
         content_results = None
@@ -303,16 +300,16 @@ class ProductionHybridRecommender:
 # Main interface functions
 @st.cache_data
 def production_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8):
-    """Production-quality hybrid recommendation system"""
+    """Production-quality hybrid recommendation system - silent version"""
     recommender = ProductionHybridRecommender(merged_df)
     return recommender.recommend(target_movie, genre, top_n)
 
 @st.cache_data
 def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8):
-    """Updated smart hybrid using production approach"""
+    """Updated smart hybrid using production approach - silent version"""
     return production_hybrid_recommendation(merged_df, target_movie, genre, top_n)
 
 @st.cache_data
 def hybrid_recommendation_system(merged_df, target_movie=None, genre=None, top_n=8):
-    """Main hybrid system for backward compatibility"""
+    """Main hybrid system for backward compatibility - silent version"""
     return production_hybrid_recommendation(merged_df, target_movie, genre, top_n)
