@@ -72,22 +72,20 @@ def diagnose_data_linking(merged_df, user_ratings_df):
                 st.write("**Sample overlapping Movie_IDs:**")
                 st.write(sorted(list(overlap))[:10])
 
-# Updated load_user_ratings function with diagnosis
+# Silent load user ratings function
 @st.cache_data
 def load_user_ratings():
-    """Load real user ratings from CSV file or session state"""
+    """Load real user ratings from CSV file or session state - silent version"""
     try:
         # First check if user uploaded the file (stored in session state)
         if 'user_ratings_df' in st.session_state:
             user_ratings_df = st.session_state['user_ratings_df']
-            st.success("✅ Using uploaded user_movie_rating.csv from session")
             
             # Validate required columns
             required_cols = ['User_ID', 'Movie_ID', 'Rating']
             if all(col in user_ratings_df.columns for col in required_cols):
                 return user_ratings_df
             else:
-                st.warning(f"⚠️ Uploaded user_movie_rating.csv missing required columns: {required_cols}")
                 return None
         
         # If not in session state, try to find it in local filesystem
@@ -95,7 +93,6 @@ def load_user_ratings():
         for path in ["user_movie_rating.csv", "./user_movie_rating.csv", "data/user_movie_rating.csv", "../user_movie_rating.csv"]:
             if os.path.exists(path):
                 user_ratings_df = pd.read_csv(path)
-                st.success(f"✅ Found user_movie_rating.csv at: {path}")
                 break
         
         if user_ratings_df is not None:
@@ -104,14 +101,11 @@ def load_user_ratings():
             if all(col in user_ratings_df.columns for col in required_cols):
                 return user_ratings_df
             else:
-                st.warning(f"⚠️ user_movie_rating.csv missing required columns: {required_cols}")
                 return None
         else:
-            st.info("📋 user_movie_rating.csv not found, using enhanced IMDb-based approach")
             return None
             
     except Exception as e:
-        st.error(f"Error loading user ratings: {str(e)}")
         return None
 
 @st.cache_data
@@ -363,7 +357,7 @@ def item_based_collaborative_filtering(merged_df, target_movie, top_n=5):
 
 @st.cache_data
 def user_based_collaborative_filtering_enhanced(merged_df, target_movie, user_ratings_df=None, top_n=5):
-    """Enhanced user-based collaborative filtering"""
+    """Enhanced user-based collaborative filtering - silent version"""
     similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
     if not similar_titles:
         return None
@@ -392,7 +386,6 @@ def user_based_collaborative_filtering_enhanced(merged_df, target_movie, user_ra
     active_users = np.where(target_ratings > 3.0)[0]
     
     if len(active_users) == 0:
-        st.warning(f"No users found who highly rated '{target_title}', trying item-based approach")
         return item_based_collaborative_filtering(merged_df, target_movie, top_n)
     
     # Aggregate recommendations from similar users
@@ -458,16 +451,13 @@ def user_based_collaborative_filtering_enhanced(merged_df, target_movie, user_ra
 
 @st.cache_data
 def create_user_item_matrix_from_real_data(merged_df, user_ratings_df):
-    """Create user-item matrix from real user rating data using Movie_ID mapping"""
+    """Create user-item matrix from real user rating data - silent version"""
     if user_ratings_df is None:
         return create_synthetic_user_profiles_enhanced(merged_df)
     
     try:
-        st.info(f"📊 Processing real user ratings: {len(user_ratings_df)} ratings from {user_ratings_df['User_ID'].nunique()} users")
-        
         # Check if merged_df has Movie_ID column (from movies.csv)
         if 'Movie_ID' not in merged_df.columns:
-            st.error("❌ Movie_ID column not found in merged dataset. Make sure movies.csv is properly loaded with Movie_ID column.")
             return create_synthetic_user_profiles_enhanced(merged_df)
         
         # Create mapping from Movie_ID to dataset row indices
@@ -477,16 +467,10 @@ def create_user_item_matrix_from_real_data(merged_df, user_ratings_df):
         valid_movie_ids = set(movie_id_to_index.keys())
         user_movie_ids = set(user_ratings_df['Movie_ID'].unique())
         
-        st.info(f"🔍 Movies in dataset: {len(valid_movie_ids)}, Movies in user ratings: {len(user_movie_ids)}")
-        
         # Find intersection
         common_movie_ids = valid_movie_ids & user_movie_ids
         if not common_movie_ids:
-            st.error("❌ No common Movie_IDs found between movies.csv and user_movie_rating.csv")
-            st.info("💡 Check that Movie_ID values match between the two files")
             return create_synthetic_user_profiles_enhanced(merged_df)
-        
-        st.success(f"✅ Found {len(common_movie_ids)} movies common to both datasets")
         
         # Filter ratings to common movies only
         filtered_ratings = user_ratings_df[user_ratings_df['Movie_ID'].isin(common_movie_ids)].copy()
@@ -497,8 +481,6 @@ def create_user_item_matrix_from_real_data(merged_df, user_ratings_df):
         # Remove any rows where mapping failed
         filtered_ratings = filtered_ratings.dropna(subset=['dataset_index'])
         filtered_ratings['dataset_index'] = filtered_ratings['dataset_index'].astype(int)
-        
-        st.success(f"✅ Successfully mapped {len(filtered_ratings)} ratings to dataset indices")
         
         # Create user-item matrix with dataset indices as columns
         user_movie_matrix = filtered_ratings.pivot_table(
@@ -522,43 +504,28 @@ def create_user_item_matrix_from_real_data(merged_df, user_ratings_df):
         rating_matrix = user_movie_matrix.values
         user_names = [f"User_{uid}" for uid in user_movie_matrix.index]
         
-        # Calculate and display statistics
-        non_zero_ratings = np.count_nonzero(rating_matrix)
-        total_possible = rating_matrix.size
-        sparsity = (1 - (non_zero_ratings / total_possible)) * 100
-        avg_rating = filtered_ratings['Rating'].mean()
-        
-        st.success(f"🎯 Created user-item matrix: {len(user_names)} users × {len(all_dataset_indices)} movies")
-        st.info(f"📈 Matrix stats: {non_zero_ratings:,} ratings ({sparsity:.1f}% sparse), avg rating: {avg_rating:.2f}")
-        
         return rating_matrix, user_names
         
     except Exception as e:
-        st.error(f"Error processing user ratings: {str(e)}")
-        st.info("🔄 Falling back to enhanced synthetic user data")
         return create_synthetic_user_profiles_enhanced(merged_df)
 
 # Main interface function
 @st.cache_data
 def collaborative_filtering_enhanced(merged_df, target_movie, top_n=5):
-    """Enhanced collaborative filtering that chooses best approach based on available data"""
+    """Enhanced collaborative filtering that chooses best approach based on available data - silent version"""
     if not target_movie:
         return None
     
     user_ratings_df = load_user_ratings()
     
     if user_ratings_df is not None:
-        st.info("🔄 Using User-Based Collaborative Filtering with real user data")
         return user_based_collaborative_filtering_enhanced(merged_df, target_movie, user_ratings_df, top_n)
     else:
-        st.info("🔄 Using hybrid User-Based + Item-Based Collaborative Filtering")
-        
         # Try user-based first (with enhanced synthetic data)
         user_result = user_based_collaborative_filtering_enhanced(merged_df, target_movie, None, top_n)
         
         # If user-based fails or gives poor results, fall back to item-based
         if user_result is None or len(user_result) < top_n // 2:
-            st.info("🔄 Enhancing with Item-Based Collaborative Filtering")
             item_result = item_based_collaborative_filtering(merged_df, target_movie, top_n)
             
             # Combine results if both exist
