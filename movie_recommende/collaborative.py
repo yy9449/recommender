@@ -262,11 +262,20 @@ def create_synthetic_user_profiles_enhanced(merged_df, n_users=50):
                 
                 if genre_match:
                     # Year preference check
-                    year_match = True
-                    if archetype['year_pref'] == 'recent' and pd.notna(movie_year):
-                        year_match = movie_year >= 2000
-                    elif archetype['year_pref'] == 'classic' and pd.notna(movie_year):
-                        year_match = movie_year < 2000
+year_match = True
+if archetype['year_pref'] == 'recent' and pd.notna(movie_year):
+    # Ensure movie_year is numeric
+    try:
+        year_value = int(movie_year) if isinstance(movie_year, (int, float, str)) and str(movie_year).isdigit() else 2000
+        year_match = year_value >= 2000
+    except (ValueError, TypeError):
+        year_match = True  # Default to True if year can't be parsed
+elif archetype['year_pref'] == 'classic' and pd.notna(movie_year):
+    try:
+        year_value = int(movie_year) if isinstance(movie_year, (int, float, str)) and str(movie_year).isdigit() else 2000
+        year_match = year_value < 2000
+    except (ValueError, TypeError):
+        year_match = True  # Default to True if year can't be parsed
                     
                     if year_match:
                         # Vote popularity check
