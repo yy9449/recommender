@@ -122,8 +122,8 @@ def compute_popularity_and_recency(merged, ratings_df=None):
 def predict_content_scores(merged, content_matrix):
 	# Return normalized content similarity scores between items
 	sim = cosine_similarity(content_matrix)
-	# Normalize to [0,1]
-	sim = (sim - sim.min()) / (sim.max() - sim.min() + 1e-9)
+	# Normalize cosine similarity in [-1,1] to [0,1] for stability and comparability
+	sim = np.clip((sim + 1.0) / 2.0, 0.0, 1.0)
 	index_by_title = {t: i for i, t in enumerate(merged['Series_Title'])}
 	return sim, index_by_title
 
@@ -194,10 +194,13 @@ def evaluate_models():
 	user_mean = train_df.groupby('User_ID')['Rating'].mean().to_dict()
 	item_mean = train_df.groupby('Movie_ID')['Rating'].mean().to_dict()
 
+	# Determine classification threshold from train set (median of train ratings)
+	rating_threshold = float(np.median(train_df['Rating'])) if not train_df.empty else RATING_THRESHOLD
+
 	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
 	for user_id, grp in user_train:
-		liked_movie_ids = grp[grp['Rating'] >= RATING_THRESHOLD]['Movie_ID'].tolist()
+		liked_movie_ids = grp[grp['Rating'] >= rating_threshold]['Movie_ID'].tolist()
 		idxs = [title_to_idx.get(movieid_to_title.get(mid, ''), None) for mid in liked_movie_ids]
 		idxs = [i for i in idxs if i is not None]
 		if idxs:
@@ -222,7 +225,7 @@ def evaluate_models():
 		user = row['User_ID']
 		movie_id = int(row['Movie_ID'])
 		true_rating = float(row['Rating'])
-		true_label = 1 if true_rating >= RATING_THRESHOLD else 0
+		true_label = 1 if true_rating >= rating_threshold else 0
 		title = movieid_to_title.get(movie_id)
 		if title is None or title not in title_to_idx:
 			# skip if not in merged dataset
@@ -289,9 +292,9 @@ def evaluate_models():
 
 		# Classification label predictions (hybrid uses majority vote of signals)
 		y_true_cls.append(true_label)
-		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
-		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		y_pred_cls_content.append(1 if content_rating_est >= rating_threshold else 0)
+		y_pred_cls_collab.append(1 if collab_score >= rating_threshold else 0)
+		votes = int(content_rating_est >= rating_threshold) + int(collab_score >= rating_threshold) + int(hybrid_pred >= rating_threshold)
 		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
@@ -343,8 +346,8 @@ def evaluate_models():
 	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
 		row = {
 			'Method Used': name,
-			'Precision': round(results[name]['precision_weighted'], 3),
-			'Recall': round(results[name]['recall_weighted'], 3),
+			'Precision': round(results[name]['precision'], 3),
+			'Recall': round(results[name]['recall'], 3),
 			'RMSE': round(results[name]['rmse'], 3),
 			'Notes': (
 				'Worked well with dense ratings' if name == 'Collaborative' else
