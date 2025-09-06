@@ -403,46 +403,29 @@ def main():
             
             try:
                 if algorithm == "Content-Based":
-                    # Fix: Pass parameters correctly based on function signature
+                    # Use positional arguments to match function signature exactly
                     target_movie = movie_title if movie_title else None
-                    results = content_based_filtering_enhanced(
-                        merged_df=merged_df, 
-                        target_movie=target_movie, 
-                        genre_filter=genre_input if genre_input else None, 
-                        top_n=top_n
-                    )
+                    genre_filter = genre_input if genre_input else None
+                    results = content_based_filtering_enhanced(merged_df, target_movie, genre_filter, top_n)
                     
                 elif algorithm == "Collaborative Filtering":
                     if movie_title and user_ratings_df is not None:
-                        results = collaborative_filtering_enhanced(
-                            merged_df=merged_df, 
-                            user_ratings_df=user_ratings_df, 
-                            target_movie=movie_title, 
-                            top_n=top_n
-                        )
+                        results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
                     else:
                         st.warning("⚠️ Collaborative filtering requires a movie title and user ratings data.")
                         return
                         
                 else:  # Hybrid
                     if user_ratings_df is not None:
-                        results = smart_hybrid_recommendation(
-                            merged_df=merged_df, 
-                            user_ratings_df=user_ratings_df, 
-                            target_movie=movie_title if movie_title else None, 
-                            genre_filter=genre_input if genre_input else None, 
-                            top_n=top_n
-                        )
+                        target_movie = movie_title if movie_title else None
+                        genre_filter = genre_input if genre_input else None
+                        results = smart_hybrid_recommendation(merged_df, user_ratings_df, target_movie, genre_filter, top_n)
                     else:
                         # Fallback to content-based if no user data
                         st.info("ℹ️ No user data available, falling back to content-based recommendations.")
                         target_movie = movie_title if movie_title else None
-                        results = content_based_filtering_enhanced(
-                            merged_df=merged_df, 
-                            target_movie=target_movie, 
-                            genre_filter=genre_input if genre_input else None, 
-                            top_n=top_n
-                        )
+                        genre_filter = genre_input if genre_input else None
+                        results = content_based_filtering_enhanced(merged_df, target_movie, genre_filter, top_n)
                         
             except Exception as e:
                 st.error(f"❌ Error generating recommendations: {str(e)}")
