@@ -9,6 +9,7 @@ import streamlit as st
 def _create_optimized_soup(df: pd.DataFrame) -> pd.Series:
     """
     Creates the final, best-performing 'soup' with a balanced weighting of features.
+    Handles missing columns gracefully.
     """
     df_copy = df.copy()
 
@@ -18,15 +19,39 @@ def _create_optimized_soup(df: pd.DataFrame) -> pd.Series:
     w_title = 2.0
     w_director = 1.0
 
-    # Clean and prepare the selected features
-    overview = df_copy['Overview'].fillna('').astype(str)
+    # Clean and prepare the selected features with fallbacks
+    # Overview - check multiple possible column names
+    overview_cols = ['Overview', 'Plot', 'Description', 'Summary']
+    overview = ''
+    for col in overview_cols:
+        if col in df_copy.columns:
+            overview = df_copy[col].fillna('').astype(str)
+            break
+    if overview == '':
+        overview = pd.Series([''] * len(df_copy), index=df_copy.index)
     
     # Handle both Genre and Genre_y columns
     genre_col = 'Genre_y' if 'Genre_y' in df_copy.columns else 'Genre'
-    genre = df_copy[genre_col].fillna('').astype(str)
+    if genre_col in df_copy.columns:
+        genre = df_copy[genre_col].fillna('').astype(str)
+    else:
+        genre = pd.Series([''] * len(df_copy), index=df_copy.index)
     
-    title = df_copy['Series_Title'].fillna('').astype(str)
-    director = df_copy['Director'].fillna('').astype(str)
+    # Title
+    if 'Series_Title' in df_copy.columns:
+        title = df_copy['Series_Title'].fillna('').astype(str)
+    else:
+        title = pd.Series([''] * len(df_copy), index=df_copy.index)
+    
+    # Director - check multiple possible column names
+    director_cols = ['Director', 'Director_y', 'Director_x']
+    director = ''
+    for col in director_cols:
+        if col in df_copy.columns:
+            director = df_copy[col].fillna('').astype(str)
+            break
+    if director == '':
+        director = pd.Series([''] * len(df_copy), index=df_copy.index)
 
     # Combine the features with their weights
     soup = (
