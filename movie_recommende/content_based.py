@@ -6,6 +6,7 @@ import re
 from difflib import get_close_matches
 import streamlit as st
 
+
 def safe_convert_to_numeric(value, default=None):
     """Safely convert a value to numeric, handling strings and NaN"""
     if pd.isna(value):
@@ -23,6 +24,23 @@ def safe_convert_to_numeric(value, default=None):
             return default
     
     return default
+
+
+def find_rating_column(df: pd.DataFrame) -> str:
+    return 'IMDB_Rating' if 'IMDB_Rating' in df.columns else 'Rating'
+
+
+def find_genre_column(df: pd.DataFrame) -> str:
+    return 'Genre_y' if 'Genre_y' in df.columns else 'Genre'
+
+
+def find_director_column(df: pd.DataFrame) -> str:
+    if 'Director_y' in df.columns:
+        return 'Director_y'
+    if 'Director_x' in df.columns:
+        return 'Director_x'
+    return 'Director'
+
 
 def find_similar_titles(input_title, titles_list, cutoff=0.6):
     """Enhanced fuzzy matching for movie titles"""
@@ -53,42 +71,44 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
     # Close matches
     return get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
 
+
 @st.cache_data
 def create_content_features(merged_df):
-    """Create weighted TF-IDF features from multiple text fields"""
-    
-    # Clean and combine features with weights
-    def combine_features(row):
-        # Intelligently select the best available column after the merge
-        overview = str(row.get('Overview_y', row.get('Overview_x', '')))
-        genre = str(row.get('Genre_y', row.get('Genre_x', '')))
-        director = str(row.get('Director_y', row.get('Director_x', '')))
-        
-        # Combine all available star information
-        stars = str(row.get('Stars', '')) # from movies.csv
-        star1 = str(row.get('Star1', '')) # from imdb_top_1000.csv
-        star2 = str(row.get('Star2', ''))
-        star3 = str(row.get('Star3', ''))
-        star4 = str(row.get('Star4', ''))
-        all_stars = ' '.join(filter(None, [stars, star1, star2, star3, star4]))
-        
-        # Ensure values are not NaN before joining
-        overview = overview if pd.notna(overview) else ''
-        genre = genre if pd.notna(genre) else ''
-        director = director if pd.notna(director) else ''
+    """Create TF-IDF features using only title, genre, director, and rating tokens"""
 
-        # Apply weights
-        return ' '.join([overview]*3 + [genre]*2 + [director]*2 + [all_stars])
+    genre_col = find_genre_column(merged_df)
+    rating_col = find_rating_column(merged_df)
+    director_col = find_director_column(merged_df)
 
-    # Create a new column with combined features
-    merged_df['combined_features'] = merged_df.apply(combine_features, axis=1)
-    
-    tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), min_df=2)
-    return tfidf.fit_transform(merged_df['combined_features'])
+    def build_row_text(row: pd.Series) -> str:
+        title = str(row.get('Series_Title', '')).strip()
+        genre = str(row.get(genre_col, '')).strip()
+        director = str(row.get(director_col, '')).strip()
+
+        # Rating bucket token (1..10) to inject numeric signal into TF-IDF
+        rating_val = safe_convert_to_numeric(row.get(rating_col, np.nan), default=np.nan)
+        if pd.isna(rating_val):
+            rating_val = 7.0
+        rating_bucket = int(max(1, min(10, round(rating_val))))
+        rating_token = f"rating_{rating_bucket}"
+
+        return ' '.join([
+            title,
+            genre,
+            director,
+            rating_token,
+        ])
+
+    merged_df = merged_df.copy()
+    merged_df['cb_text'] = merged_df.apply(build_row_text, axis=1)
+
+    tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), min_df=1)
+    return tfidf.fit_transform(merged_df['cb_text'])
+
 
 @st.cache_data
 def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=8):
-    """Enhanced Content-Based filtering with improved feature engineering and fuzzy matching"""
+    """Content-Based filtering using title, genre, director and rating tokens (cosine similarity)"""
     if target_movie:
         similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
         if not similar_titles:
@@ -108,14 +128,15 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         similar_indices = np.argsort(-similarities)[1:top_n+1]
         
         result_df = merged_df.iloc[similar_indices]
-        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        rating_col = find_rating_column(merged_df)
+        genre_col = find_genre_column(merged_df)
         return result_df[['Series_Title', genre_col, rating_col]]
     
     elif genre:
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+        genre_col = find_genre_column(merged_df)
+        rating_col = find_rating_column(merged_df)
         
+        # Build genre-only TF-IDF for query matching
         genre_corpus = merged_df[genre_col].fillna('').tolist()
         tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
         tfidf_matrix = tfidf.fit_transform(genre_corpus)
