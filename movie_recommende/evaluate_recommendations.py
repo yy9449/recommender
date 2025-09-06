@@ -129,12 +129,12 @@ if __name__ == "__main__":
             'precision': precision_score(y_true_cls, y_pred_cls, average='weighted', zero_division=0),
             'recall': recall_score(y_true_cls, y_pred_cls, average='weighted', zero_division=0)
         }
-        title = model_name.replace('content', 'Content-Based (Optimized)').replace('collab', 'Collaborative (SVD)').replace('hybrid', 'Hybrid (SVD-Heavy)')
+        title = model_name.replace('content', 'Content-Based ').replace('collab', 'Collaborative').replace('hybrid', 'Hybrid ')
         print(f"Model: {title}\nAccuracy: {results[model_name]['accuracy']:.3f}\n{results[model_name]['report']}\n{'-'*30}")
 
     print("\n--- Performance Comparison ---\n")
     summary_df = pd.DataFrame({
-        "Method Used": [name.replace('content', 'Content-Based (Optimized)').replace('collab', 'Collaborative (SVD)').replace('hybrid', 'Hybrid (SVD-Heavy)') for name in results.keys()],
+        "Method Used": [name.replace('content', 'Content-Based ').replace('collab', 'Collaborative').replace('hybrid', 'Hybrid ') for name in results.keys()],
         "Precision": [res['precision'] for res in results.values()],
         "Recall": [res['recall'] for res in results.values()],
         "RMSE": [res['rmse'] for res in results.values()]
