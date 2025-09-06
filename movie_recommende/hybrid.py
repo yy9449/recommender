@@ -33,9 +33,9 @@ def _calculate_recency(df: pd.DataFrame) -> pd.Series:
 @st.cache_data
 def smart_hybrid_recommendation(
     merged_df: pd.DataFrame, 
-    user_ratings_df: pd.DataFrame = None,  # Made optional
+    user_ratings_df: pd.DataFrame = None,
     target_movie: str = None,
-    genre_filter: str = None,
+    genre_filter: str = None,  # <-- THIS LINE IS THE FIX
     top_n: int = 10
 ):
     """
