@@ -1,162 +1,162 @@
+# evaluate_recommendations.py
+
 import pandas as pd
 import numpy as np
-from sklearn.metrics import precision_recall_fscore_support, classification_report, mean_squared_error
+import os  # <-- Added OS import
+import sys # <-- Added Sys import
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    precision_score, recall_score, f1_score, accuracy_score,
+    mean_squared_error, classification_report
+)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
+from collections import defaultdict
+import warnings
 
-from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced
-from hybrid import smart_hybrid_recommendation
+warnings.filterwarnings('ignore')
 
+# --- Configuration ---
+RATING_THRESHOLD = 7.0
+TEST_SIZE_PER_USER = 0.3
+RANDOM_STATE = 42
 
-def load_datasets():
-    movies_df = pd.read_csv('movies.csv')
-    imdb_df = pd.read_csv('imdb_top_1000.csv')
-    ratings_df = pd.read_csv('user_movie_rating.csv')
+# --- Data Loading and Preprocessing ---
+def load_and_prepare_data():
+    """Loads all datasets, merges them, and cleans data."""
+    movies = pd.read_csv('movies.csv')
+    imdb = pd.read_csv('imdb_top_1000.csv')
+    user_ratings = pd.read_csv('user_movie_rating.csv')
 
-    if 'Movie_ID' not in movies_df.columns:
-        movies_df['Movie_ID'] = range(len(movies_df))
+    if 'Movie_ID' not in movies.columns:
+        movies['Movie_ID'] = range(len(movies))
 
-    merged_df = pd.merge(movies_df, imdb_df, on='Series_Title', how='inner')
-    merged_df = merged_df.drop_duplicates(subset='Series_Title')
+    imdb['Released_Year'] = pd.to_numeric(imdb['Released_Year'], errors='coerce')
+    imdb['No_of_Votes'] = pd.to_numeric(imdb['No_of_Votes'], errors='coerce')
+    merged_df = pd.merge(movies, imdb, on='Series_Title', how='left')
+    
+    merged_df['IMDB_Rating'] = merged_df['IMDB_Rating'].fillna(merged_df['IMDB_Rating'].mean())
+    merged_df['No_of_Votes'] = merged_df['No_of_Votes'].fillna(0)
+    merged_df['Released_Year'] = merged_df['Released_Year'].fillna(merged_df['Released_Year'].mode()[0])
+    merged_df = merged_df.dropna(subset=['Movie_ID']).drop_duplicates(subset=['Movie_ID'])
+    merged_df['Movie_ID'] = merged_df['Movie_ID'].astype(int)
 
-    # Reattach Movie_ID if lost
-    if 'Movie_ID' not in merged_df.columns and 'Movie_ID' in movies_df.columns:
-        merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on='Series_Title', how='inner')
+    return merged_df, user_ratings
 
-    return merged_df, ratings_df
+def create_train_test_split(user_ratings):
+    """Splits ratings data into train and test sets."""
+    user_counts = user_ratings['User_ID'].value_counts()
+    active_users = user_counts[user_counts >= 2].index
+    ratings_subset = user_ratings[user_ratings['User_ID'].isin(active_users)]
 
+    train, test = train_test_split(ratings_subset, test_size=TEST_SIZE_PER_USER, stratify=ratings_subset['User_ID'], random_state=RANDOM_STATE)
+    return train, test
 
-def build_ground_truth(merged_df: pd.DataFrame, ratings_df: pd.DataFrame):
-    # Build binary relevance using ratings: >=8 positive, <8 negative (balance classes)
-    ratings_df = ratings_df.copy()
-    ratings_df['label'] = (ratings_df['Rating'] >= 8).astype(int)
+# --- Prediction Models ---
+def predict_rating(user_id, movie_id, train_df, sim_matrix, movie_id_to_idx):
+    """Generic prediction function for content-based and collaborative models."""
+    if movie_id not in movie_id_to_idx:
+        return train_df['Rating'].mean()
 
-    # Balance positive and negative samples
-    pos = ratings_df[ratings_df['label'] == 1]
-    neg = ratings_df[ratings_df['label'] == 0]
-    n = min(len(pos), len(neg))
-    ratings_balanced = pd.concat([pos.sample(n, random_state=42), neg.sample(n, random_state=42)], ignore_index=True)
+    user_ratings = train_df[train_df['User_ID'] == user_id]
+    if user_ratings.empty:
+        return train_df['Rating'].mean()
 
-    return ratings_balanced
+    target_movie_idx = movie_id_to_idx[movie_id]
+    sim_scores = sim_matrix[target_movie_idx]
+    
+    numerator = 0
+    denominator = 0
+    
+    for _, row in user_ratings.iterrows():
+        rated_movie_id = row['Movie_ID']
+        if rated_movie_id in movie_id_to_idx:
+            rated_movie_idx = movie_id_to_idx[rated_movie_id]
+            similarity = sim_scores[rated_movie_idx]
+            rating = row['Rating']
+            numerator += similarity * rating
+            denominator += similarity
+    
+    return numerator / denominator if denominator > 0 else train_df['Rating'].mean()
 
+def predict_rating_hybrid(user_id, movie_id, train_df, content_sim, collab_sim, movie_id_to_idx):
+    """Predicts a rating using a simple hybrid blend."""
+    alpha, beta = 0.5, 0.5
+    pred_content = predict_rating(user_id, movie_id, train_df, content_sim, movie_id_to_idx)
+    pred_collab = predict_rating(user_id, movie_id, train_df, collab_sim, movie_id_to_idx)
+    return (alpha * pred_content) + (beta * pred_collab)
 
-def evaluate_model(merged_df: pd.DataFrame, ratings_df: pd.DataFrame, method: str) -> dict:
-    # For each (User_ID, Movie_ID) in a test set, use the given movie's title to get top-N similar
-    # and mark hit if the actual Movie_ID appears among recommendations.
-
-    # Use a stratified split
-    ratings_balanced = build_ground_truth(merged_df, ratings_df)
-    train_df, test_df = train_test_split(ratings_balanced, test_size=0.5, random_state=42, stratify=ratings_balanced['label'])
-
-    y_true = []
-    y_pred = []
-    y_rating_true = []
-    y_rating_pred = []
-
-    for _, row in test_df.iterrows():
-        user_id = int(row['User_ID'])
-        movie_id = int(row['Movie_ID'])
-        rating = float(row['Rating'])
-
-        # Map Movie_ID to title; if missing, skip
-        try:
-            title = merged_df.loc[merged_df['Movie_ID'] == movie_id, 'Series_Title'].iloc[0]
-        except Exception:
-            # If the movie_id not present in merged_df, skip this example
-            continue
-
-        top_n = 10
-        if method == 'content':
-            recs = content_based_filtering_enhanced(merged_df, title, None, top_n)
-        elif method == 'collaborative':
-            recs = collaborative_filtering_enhanced(merged_df, title, top_n)
-        else:
-            recs = smart_hybrid_recommendation(merged_df, title, None, top_n)
-
-        if recs is None or recs.empty:
-            # No predictions; default negative
-            y_true.append(1 if rating >= 8 else 0)
-            y_pred.append(0)
-            y_rating_true.append(rating)
-            y_rating_pred.append(merged_df['IMDB_Rating'].astype(float).mean() if 'IMDB_Rating' in merged_df.columns else 6.5)
-            continue
-
-        # Determine if ground truth movie_id is in recs (hit => positive)
-        # Map recs titles back to Movie_IDs via merged_df
-        pred_titles = recs['Series_Title'].values
-        pred_ids = []
-        for t in pred_titles:
-            try:
-                pid = int(merged_df.loc[merged_df['Series_Title'] == t, 'Movie_ID'].iloc[0])
-                pred_ids.append(pid)
-            except Exception:
-                pass
-
-        y_true.append(1 if rating >= 8 else 0)
-        y_pred.append(1 if movie_id in pred_ids else 0)
-
-        # Proxy predicted rating: mean of recommended items' ratings
-        if 'IMDB_Rating' in recs.columns:
-            y_rating_pred.append(float(np.clip(recs['IMDB_Rating'].astype(float).mean(), 0, 10)))
-        else:
-            y_rating_pred.append(merged_df['IMDB_Rating'].astype(float).mean() if 'IMDB_Rating' in merged_df.columns else 6.5)
-        y_rating_true.append(rating)
-
-    # Compute metrics
-    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='binary', zero_division=0)
-    report = classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0, output_dict=True)
-
-    mse = mean_squared_error(y_rating_true, y_rating_pred) if y_rating_true else float('nan')
-    rmse = float(np.sqrt(mse)) if not np.isnan(mse) else float('nan')
-
+# --- Evaluation Metrics ---
+def compute_metrics(y_true, y_pred, y_true_cls, y_pred_cls):
+    """Computes and returns a dictionary of metrics."""
     return {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'mse': mse,
-        'rmse': rmse,
-        'report': report
+        'rmse': np.sqrt(mean_squared_error(y_true, y_pred)),
+        'accuracy': accuracy_score(y_true_cls, y_pred_cls),
+        'precision': precision_score(y_true_cls, y_pred_cls, average='weighted'),
+        'recall': recall_score(y_true_cls, y_pred_cls, average='weighted'),
+        'f1': f1_score(y_true_cls, y_pred_cls, average='weighted'),
+        'report': classification_report(y_true_cls, y_pred_cls, target_names=['negative', 'positive'])
     }
 
+# --- Main Execution ---
+if __name__ == "__main__":
+    print("Loading and preparing data...")
+    merged_df, user_ratings = load_and_prepare_data()
+    train_df, test_df = create_train_test_split(user_ratings)
+    
+    merged_df = merged_df.reset_index(drop=True)
+    movie_id_to_idx = {mid: i for i, mid in enumerate(merged_df['Movie_ID'])}
+    
+    print("Building similarity matrices...")
+    # Content-Based
+    soup = (merged_df['Genre'].fillna('') + ' ' + merged_df['Series_Title'].fillna(''))
+    tfidf_matrix = TfidfVectorizer(stop_words='english').fit_transform(soup)
+    content_sim_matrix = cosine_similarity(tfidf_matrix)
 
-def main():
-    merged_df, ratings_df = load_datasets()
+    # Collaborative
+    aligned_user_item = train_df.pivot_table(index='Movie_ID', columns='User_ID', values='Rating').reindex(merged_df['Movie_ID']).fillna(0)
+    collab_sim_matrix = cosine_similarity(aligned_user_item.values)
 
-    # Evaluate each method
+    print("Evaluating models on test set...")
+    predictions = defaultdict(list)
+    true_ratings = list(test_df['Rating'])
+
+    for _, row in test_df.iterrows():
+        user_id, movie_id = row['User_ID'], row['Movie_ID']
+        predictions['content'].append(predict_rating(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx))
+        predictions['collab'].append(predict_rating(user_id, movie_id, train_df, collab_sim_matrix, movie_id_to_idx))
+        predictions['hybrid'].append(predict_rating_hybrid(user_id, movie_id, train_df, content_sim_matrix, collab_sim_matrix, movie_id_to_idx))
+
+    print("\n--- Evaluation Results ---\n")
     results = {}
-    for method_key, method_name in [('content', 'Content-Based'), ('collaborative', 'Collaborative'), ('hybrid', 'Hybrid')]:
-        metrics = evaluate_model(merged_df, ratings_df, method_key)
-        results[method_name] = metrics
+    
+    for model in predictions:
+        predictions[model] = np.clip(predictions[model], 1, 10)
 
-    # Print detailed reports
-    for name, m in results.items():
-        print(f"Model: {name}")
-        if 'report' in m and isinstance(m['report'], dict):
-            # Reconstruct a readable report
-            rep = m['report']
-            accuracy = rep.get('accuracy', 0.0)
-            print(f"Accuracy: {accuracy:.3f}")
-            for label in ['negative', 'positive']:
-                row = rep.get(label, {})
-                print(f"\t{label}\t{row.get('precision', 0):.2f}\t{row.get('recall', 0):.2f}\t{row.get('f1-score', 0):.2f}\t{int(row.get('support', 0))}")
-            macro = rep.get('macro avg', {})
-            weighted = rep.get('weighted avg', {})
-            print(f"\nmacro avg\t{macro.get('precision', 0):.2f}\t{macro.get('recall', 0):.2f}\t{macro.get('f1-score', 0):.2f}\t{int(rep.get('support', 0))}")
-            print(f"weighted avg\t{weighted.get('precision', 0):.2f}\t{weighted.get('recall', 0):.2f}\t{weighted.get('f1-score', 0):.2f}\t{int(rep.get('support', 0))}\n")
-        print(f"MSE: {m['mse']:.3f}  RMSE: {m['rmse']:.3f}")
-        print('-' * 60)
+    y_true_cls = [1 if r >= RATING_THRESHOLD else 0 for r in true_ratings]
 
-    # Comparison table
-    print("\nMethod Used\tPrecision\tRecall\tRMSE\tNotes")
-    for name in ['Collaborative', 'Content-Based', 'Hybrid']:
-        m = results[name]
-        notes = {
-            'Collaborative': 'Worked well with dense ratings',
-            'Content-Based': 'Good with rich metadata',
-            'Hybrid': 'Best balance between both'
-        }[name]
-        print(f"{name}\t{m['precision']:.2f}\t{m['recall']:.2f}\t{m['rmse']:.2f}\t{notes}")
+    for model_name in ['content', 'collab', 'hybrid']:
+        y_pred_reg = predictions[model_name]
+        y_pred_cls = [1 if r >= RATING_THRESHOLD else 0 for r in y_pred_reg]
+        results[model_name] = compute_metrics(true_ratings, y_pred_reg, y_true_cls, y_pred_cls)
+        
+        title = model_name.replace('content', 'Content-Based').replace('collab', 'Collaborative').replace('hybrid', 'Hybrid')
+        print(f"Model: {title}")
+        print(f"Accuracy: {results[model_name]['accuracy']:.3f}")
+        print(results[model_name]['report'])
+        print("-" * 30)
 
+    # --- Final Summary Table ---
+    print("\n--- Performance Comparison ---\n")
+    summary_data = [
+        {
+            "Method Used": name.replace('content', 'Content-Based').replace('collab', 'Collaborative').replace('hybrid', 'Hybrid'),
+            "Precision": metrics['precision'],
+            "Recall": metrics['recall'],
+            "RMSE": metrics['rmse'],
+        } for name, metrics in results.items()
+    ]
 
-if __name__ == '__main__':
-    main()
+    summary_df = pd.DataFrame(summary_data)
+    print(summary_df.to_string(index=False, formatters={'Precision':'{:.2f}'.format, 'Recall':'{:.2f}'.format, 'RMSE':'{:.2f}'.format}))
