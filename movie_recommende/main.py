@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
+from collaborative import collaborative_filtering_enhanced
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -402,15 +402,21 @@ def main():
             results = None
             
             if algorithm == "Content-Based":
-                results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
+                # Updated function call to match actual function signature
+                results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
             elif algorithm == "Collaborative Filtering":
-                if movie_title:
-                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
+                if movie_title and user_ratings_df is not None:
+                    results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
                 else:
-                    st.warning("⚠️ Collaborative filtering requires a movie title input.")
+                    st.warning("⚠️ Collaborative filtering requires a movie title and user ratings data.")
                     return
             else:  # Hybrid
-                results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
+                if user_ratings_df is not None:
+                    results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, top_n)
+                else:
+                    # Fallback to content-based if no user data
+                    st.info("ℹ️ No user data available, falling back to content-based recommendations.")
+                    results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
             
             # Display results
             if results is not None and not results.empty:
