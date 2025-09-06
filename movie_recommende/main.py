@@ -4,9 +4,14 @@ import numpy as np
 import warnings
 import requests
 import io
-from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced
-from hybrid import smart_hybrid_recommendation
+try:
+    from content_based import content_based_filtering_enhanced
+    from collaborative import collaborative_filtering_enhanced
+    from hybrid import smart_hybrid_recommendation
+except ImportError as e:
+    st.error(f"Failed to import required modules: {e}")
+    st.error("Please make sure all Python files are in the same directory and properly formatted.")
+    st.stop()
 
 warnings.filterwarnings('ignore')
 
