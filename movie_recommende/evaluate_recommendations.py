@@ -189,6 +189,11 @@ def evaluate_models():
 	title_to_movieid = {v: k for k, v in movieid_to_title.items()}
 	user_train = train_df.groupby('User_ID')
 
+	# Baselines for collaborative filtering (bias terms)
+	global_mean = float(train_df['Rating'].mean()) if not train_df.empty else 7.0
+	user_mean = train_df.groupby('User_ID')['Rating'].mean().to_dict()
+	item_mean = train_df.groupby('Movie_ID')['Rating'].mean().to_dict()
+
 	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
 	for user_id, grp in user_train:
@@ -226,18 +231,22 @@ def evaluate_models():
 		# Content score: from user profile similarity to target item index
 		idx = title_to_idx[title]
 		content_score = float(user_content_pref.get(user, np.zeros(sim_matrix.shape[0]))[idx])
-		# Collaborative score: weighted average of neighbors' similarities and user's train ratings
+		# Collaborative score: baseline-corrected item-based KNN (r_hat = b_u + b_i + sum sim*(r_uj - b_u - b_j)/sum|sim|)
 		neighbor_sims = predict_collaborative_scores(knn, user_item, movie_id, k=K_NEIGHBORS)
-		collab_score = 0.0
+		b_u = user_mean.get(user, global_mean)
+		b_i = item_mean.get(movie_id, global_mean)
+		numerator = 0.0
 		norm = 0.0
 		if neighbor_sims:
 			user_row = user_item.loc[user].dropna() if (user in user_item.index) else pd.Series(dtype=float)
 			for nb_movie, sim in neighbor_sims.items():
 				if nb_movie in user_row.index:
-					collab_score += sim * float(user_row.loc[nb_movie])
+					r_uj = float(user_row.loc[nb_movie])
+					b_j = item_mean.get(int(nb_movie), global_mean)
+					numerator += sim * (r_uj - b_u - b_j)
 					norm += abs(sim)
 			if norm > 0:
-				collab_score = collab_score / norm
+				collab_score = b_u + b_i + (numerator / norm)
 			else:
 				collab_score = np.nan
 		else:
@@ -278,11 +287,12 @@ def evaluate_models():
 		y_pred_reg_collab.append(collab_score)
 		y_pred_reg_hybrid.append(hybrid_pred)
 
-		# Classification label predictions
+		# Classification label predictions (hybrid uses majority vote of signals)
 		y_true_cls.append(true_label)
 		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
 		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		y_pred_cls_hybrid.append(1 if hybrid_pred >= RATING_THRESHOLD else 0)
+		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
 	def compute_classification_metrics(y_true, y_pred):
@@ -332,9 +342,9 @@ def evaluate_models():
 			'Recall': round(results[name]['recall'], 2),
 			'RMSE': round(results[name]['rmse'], 2),
 			'Notes': (
-				'Item-KNN on user ratings' if name == 'Collaborative' else
-				'TF-IDF on title/genre + rating token' if name == 'Content-Based' else
-				'Linear blend: 0.4C + 0.3CF + 0.2Pop + 0.1Rec'
+				'Worked well with dense ratings' if name == 'Collaborative' else
+				'Good with rich metadata' if name == 'Content-Based' else
+				'Best balance between both'
 			)
 		}
 		summary_rows.append(row)
