@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced
+from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -405,7 +405,7 @@ def main():
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
-                    results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
+                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
                 else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
