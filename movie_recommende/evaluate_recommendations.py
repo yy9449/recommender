@@ -333,14 +333,16 @@ def evaluate_models():
 	print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
 	print(results['Hybrid']['report'])
 
-	# Summary table
+	# Summary table with more discriminative metrics and higher precision
 	summary_rows = []
 	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
 		row = {
 			'Method Used': name,
-			'Precision': round(results[name]['precision'], 2),
-			'Recall': round(results[name]['recall'], 2),
-			'RMSE': round(results[name]['rmse'], 2),
+			'Precision': round(results[name]['precision'], 3),
+			'Recall': round(results[name]['recall'], 3),
+			'F1': round(results[name]['f1'], 3),
+			'Accuracy': round(results[name]['accuracy'], 3),
+			'RMSE': round(results[name]['rmse'], 3),
 			'Notes': (
 				'Worked well with dense ratings' if name == 'Collaborative' else
 				'Good with rich metadata' if name == 'Content-Based' else
@@ -348,7 +350,7 @@ def evaluate_models():
 			)
 		}
 		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'F1', 'Accuracy', 'RMSE', 'Notes'])
 	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
 
