@@ -120,10 +120,8 @@ def compute_popularity_and_recency(merged, ratings_df=None):
 # =============================================================
 
 def predict_content_scores(merged, content_matrix):
-	# Return normalized content similarity scores between items
+	# Return raw cosine similarity scores between items (already in [0,1] for TF-IDF)
 	sim = cosine_similarity(content_matrix)
-	# Normalize cosine similarity in [-1,1] to [0,1] for stability and comparability
-	sim = np.clip((sim + 1.0) / 2.0, 0.0, 1.0)
 	index_by_title = {t: i for i, t in enumerate(merged['Series_Title'])}
 	return sim, index_by_title
 
@@ -178,11 +176,11 @@ def evaluate_models():
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 	content_matrix = build_content_matrix(merged)
 	sim_matrix, title_to_idx = predict_content_scores(merged, content_matrix)
+	knn, user_item = build_item_similarity_knn(ratings, merged)
+	popularity, recency = compute_popularity_and_recency(merged, ratings)
 
-	# Split first to avoid data leakage; build models on training data only
+	# Split
 	train_df, test_df = split_per_user(ratings)
-	knn, user_item = build_item_similarity_knn(train_df, merged)
-	popularity, recency = compute_popularity_and_recency(merged, train_df)
 
 	# Build quick lookups
 	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
@@ -194,13 +192,10 @@ def evaluate_models():
 	user_mean = train_df.groupby('User_ID')['Rating'].mean().to_dict()
 	item_mean = train_df.groupby('Movie_ID')['Rating'].mean().to_dict()
 
-	# Determine classification threshold from train set (median of train ratings)
-	rating_threshold = float(np.median(train_df['Rating'])) if not train_df.empty else RATING_THRESHOLD
-
 	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
 	for user_id, grp in user_train:
-		liked_movie_ids = grp[grp['Rating'] >= rating_threshold]['Movie_ID'].tolist()
+		liked_movie_ids = grp[grp['Rating'] >= RATING_THRESHOLD]['Movie_ID'].tolist()
 		idxs = [title_to_idx.get(movieid_to_title.get(mid, ''), None) for mid in liked_movie_ids]
 		idxs = [i for i in idxs if i is not None]
 		if idxs:
@@ -225,7 +220,7 @@ def evaluate_models():
 		user = row['User_ID']
 		movie_id = int(row['Movie_ID'])
 		true_rating = float(row['Rating'])
-		true_label = 1 if true_rating >= rating_threshold else 0
+		true_label = 1 if true_rating >= RATING_THRESHOLD else 0
 		title = movieid_to_title.get(movie_id)
 		if title is None or title not in title_to_idx:
 			# skip if not in merged dataset
@@ -259,11 +254,8 @@ def evaluate_models():
 			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
 			collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
 
-		# Normalize content score to rating scale using item rating as quality prior
-		item_quality = merged.loc[merged['Movie_ID'] == movie_id, rating_col]
-		item_quality = float(item_quality.iloc[0]) if not item_quality.empty else 7.0
-		content_rating_est = 2.0 + 8.0 * (content_score)  # map [0,1] -> [2,10]
-		content_rating_est = 0.7 * content_rating_est + 0.3 * item_quality
+		# Map content similarity directly to rating scale without IMDB rating blending
+		content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))  # [0,1] -> [2,10]
 
 		# Popularity & Recency (0..1) mapped to 2..10
 		pop = popularity.get(title, 0.5)
@@ -292,22 +284,17 @@ def evaluate_models():
 
 		# Classification label predictions (hybrid uses majority vote of signals)
 		y_true_cls.append(true_label)
-		y_pred_cls_content.append(1 if content_rating_est >= rating_threshold else 0)
-		y_pred_cls_collab.append(1 if collab_score >= rating_threshold else 0)
-		votes = int(content_rating_est >= rating_threshold) + int(collab_score >= rating_threshold) + int(hybrid_pred >= rating_threshold)
+		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
+		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
+		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
 		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
 	def compute_classification_metrics(y_true, y_pred):
 		return {
-			# Positive-class metrics
 			'precision': precision_score(y_true, y_pred, zero_division=0),
 			'recall': recall_score(y_true, y_pred, zero_division=0),
 			'f1': f1_score(y_true, y_pred, zero_division=0),
-			# Weighted metrics for balanced comparison across class imbalance
-			'precision_weighted': precision_score(y_true, y_pred, average='weighted', zero_division=0),
-			'recall_weighted': recall_score(y_true, y_pred, average='weighted', zero_division=0),
-			'f1_weighted': f1_score(y_true, y_pred, average='weighted', zero_division=0),
 			'accuracy': accuracy_score(y_true, y_pred),
 			'report': classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0)
 		}
@@ -341,14 +328,14 @@ def evaluate_models():
 	print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
 	print(results['Hybrid']['report'])
 
-	# Summary table (show weighted precision/recall to better distinguish algorithms)
+	# Summary table
 	summary_rows = []
 	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
 		row = {
 			'Method Used': name,
-			'Precision': round(results[name]['precision'], 3),
-			'Recall': round(results[name]['recall'], 3),
-			'RMSE': round(results[name]['rmse'], 3),
+			'Precision': round(results[name]['precision'], 2),
+			'Recall': round(results[name]['recall'], 2),
+			'RMSE': round(results[name]['rmse'], 2),
 			'Notes': (
 				'Worked well with dense ratings' if name == 'Collaborative' else
 				'Good with rich metadata' if name == 'Content-Based' else
