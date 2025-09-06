@@ -74,11 +74,19 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
 @st.cache_data
 def create_content_features(merged_df):
-    """Create TF-IDF features using only title, genre, director, and rating tokens"""
+    """Create TF-IDF features using only title, genre, director, and rating tokens with weights"""
 
     genre_col = find_genre_column(merged_df)
     rating_col = find_rating_column(merged_df)
     director_col = find_director_column(merged_df)
+
+    # Emphasize genre/director/rating tokens; keep title minimal
+    WEIGHTS = {
+        'title': 1,
+        'genre': 3,
+        'director': 2,
+        'rating': 3,
+    }
 
     def build_row_text(row: pd.Series) -> str:
         title = str(row.get('Series_Title', '')).strip()
@@ -92,12 +100,12 @@ def create_content_features(merged_df):
         rating_bucket = int(max(1, min(10, round(rating_val))))
         rating_token = f"rating_{rating_bucket}"
 
-        return ' '.join([
-            title,
-            genre,
-            director,
-            rating_token,
-        ])
+        return ' '.join(
+            [title] * WEIGHTS['title'] +
+            [genre] * WEIGHTS['genre'] +
+            [director] * WEIGHTS['director'] +
+            [rating_token] * WEIGHTS['rating']
+        )
 
     merged_df = merged_df.copy()
     merged_df['cb_text'] = merged_df.apply(build_row_text, axis=1)
