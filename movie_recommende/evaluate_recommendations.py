@@ -10,6 +10,7 @@ from sklearn.metrics import (
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import defaultdict
+from surprise import SVD, Reader, Dataset
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -48,23 +49,6 @@ def load_and_prepare_data():
     
     return merged_df, user_ratings
 
-# --- Simple Collaborative Filtering (without SVD) ---
-def simple_collaborative_predict(user_id, movie_id, train_df, global_mean):
-    """
-    Simple collaborative filtering using user-based similarity.
-    """
-    user_ratings = train_df[train_df['User_ID'] == user_id]
-    if user_ratings.empty:
-        return global_mean
-    
-    # Find users who rated the target movie
-    movie_ratings = train_df[train_df['Movie_ID'] == movie_id]
-    if movie_ratings.empty:
-        return global_mean
-    
-    # Simple approach: return average rating for the movie
-    return movie_ratings['Rating'].mean()
-
 # --- Prediction Model ---
 def predict_content_based(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx, global_mean):
     if movie_id not in movie_id_to_idx: return global_mean
@@ -91,6 +75,10 @@ if __name__ == "__main__":
     print("Loading and preparing data...")
     merged_df, user_ratings = load_and_prepare_data()
     
+    reader = Reader(rating_scale=(1, 10))
+    data = Dataset.load_from_df(user_ratings[['User_ID', 'Movie_ID', 'Rating']], reader)
+    trainset = data.build_full_trainset()
+    
     train_df, test_df = train_test_split(user_ratings, test_size=TEST_SIZE, random_state=RANDOM_STATE)
     global_mean_rating = train_df['Rating'].mean()
 
@@ -111,23 +99,21 @@ if __name__ == "__main__":
     merged_df_reset = merged_df.reset_index(drop=True)
     movie_id_to_idx = {mid: i for i, mid in enumerate(merged_df_reset['Movie_ID'])}
 
-    print("Evaluating models (without SVD)...")
+    print("Training SVD model...")
+    svd = SVD(n_epochs=25, n_factors=100, random_state=RANDOM_STATE)
+    svd.fit(trainset)
+
+    print("Evaluating models...")
     predictions = defaultdict(list)
     true_ratings = list(test_df['Rating'])
 
     for _, row in test_df.iterrows():
         user_id, movie_id = row['User_ID'], row['Movie_ID']
-        
-        # Simple collaborative filtering
-        pred_collab = simple_collaborative_predict(user_id, movie_id, train_df, global_mean_rating)
-        predictions['collab'].append(pred_collab)
-        
-        # Content-based
+        pred_svd = svd.predict(user_id, movie_id).est
+        predictions['collab'].append(pred_svd)
         pred_cb = predict_content_based(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx, global_mean_rating)
         predictions['content'].append(pred_cb)
-        
-        # Hybrid
-        predictions['hybrid'].append(0.8 * pred_collab + 0.2 * pred_cb)
+        predictions['hybrid'].append(0.8 * pred_svd + 0.2 * pred_cb)
     
     print("\n--- Evaluation Results ---\n")
     results = {}
