@@ -231,36 +231,43 @@ def main():
         ("Hybrid", lambda: None),
     ]
 
-    results = []
+    # 1) Compute all results first (no printing during loop)
+    detailed_results = []
+    summary_rows = []
     for name, _ in methods:
-        print(f"\nModel: {name}")
         try:
             res = evaluate_algorithm(name, merged, ratings, top_n=8, max_users=50)
+            detailed_results.append((name, res))
+            summary_rows.append({
+                "Method": name,
+                "Precision": res["precision_macro"],
+                "Recall": res["recall_macro"],
+                "RMSE": res["rmse"],
+                "Notes": "RMSE uses dataset rating as proxy",
+            })
         except Exception as e:
-            print(f"Evaluation failed: {e}")
+            detailed_results.append((name, {"error": str(e)}))
+
+    # 2) Print classification reports and accuracies for each model
+    for name, res in detailed_results:
+        print(f"\nModel: {name}")
+        if "error" in res:
+            print(f"Evaluation failed: {res['error']}")
             continue
-
         print(f"Accuracy: {res['accuracy']:.3f}")
-        print(res["report"])  # already contains precision/recall/f1 per class and averages
+        print(res["report"])  # precision/recall/f1 per class and averages
 
-        results.append({
-            "Method": name,
-            "Precision": res["precision_macro"],
-            "Recall": res["recall_macro"],
-            "RMSE": res["rmse"],
-            "Notes": "RMSE uses dataset rating as proxy",
-        })
-
-    if results:
-        # Comparison table
+    # 3) Print comparison table
+    if summary_rows:
         print("\nCompare and Discuss Results")
         header = f"{'Method Used':<16} {'Precision':>9} {'Recall':>9} {'RMSE':>9}  Notes"
         print(header)
         print("-" * len(header))
-        for r in results:
-            prec = f"{r['Precision']:.2f}" if not np.isnan(r['Precision']) else "N/A"
-            rec = f"{r['Recall']:.2f}" if not np.isnan(r['Recall']) else "N/A"
-            rmse_str = f"{r['RMSE']:.2f}" if not (r['RMSE'] is None or np.isnan(r['RMSE'])) else "N/A"
+        for r in summary_rows:
+            prec = f"{r['Precision']:.2f}" if r['Precision'] is not None and not np.isnan(r['Precision']) else "N/A"
+            rec = f"{r['Recall']:.2f}" if r['Recall'] is not None and not np.isnan(r['Recall']) else "N/A"
+            rmse_val = r['RMSE']
+            rmse_str = f"{rmse_val:.2f}" if rmse_val is not None and not np.isnan(rmse_val) else "N/A"
             print(f"{r['Method']:<16} {prec:>9} {rec:>9} {rmse_str:>9}  {r['Notes']}")
 
 
