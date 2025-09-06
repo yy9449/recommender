@@ -4,3 +4,6 @@ numpy
 scikit-learn
 requests
 scikit-surprise
+gensim
+streamlit-searchbox
+joblib
