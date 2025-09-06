@@ -4,6 +4,10 @@ import numpy as np
 import warnings
 import requests
 import io
+
+warnings.filterwarnings('ignore')
+
+# Import with error handling
 try:
     from content_based import content_based_filtering_enhanced
     from collaborative import collaborative_filtering_enhanced
@@ -12,8 +16,6 @@ except ImportError as e:
     st.error(f"Failed to import required modules: {e}")
     st.error("Please make sure all Python files are in the same directory and properly formatted.")
     st.stop()
-
-warnings.filterwarnings('ignore')
 
 # =========================
 # Streamlit Configuration
@@ -33,12 +35,11 @@ st.markdown("---")
 # =========================
 @st.cache_data
 def load_csv_from_github(file_url, file_name):
-    """Load CSV file from GitHub repository - silent version"""
+    """Load CSV file from GitHub repository"""
     try:
         response = requests.get(file_url, timeout=30)
         response.raise_for_status()
         
-        # Read CSV from response content
         csv_content = io.StringIO(response.text)
         df = pd.read_csv(csv_content)
         
@@ -184,7 +185,7 @@ def main():
                     if 'Poster_Link' in row and pd.notna(row['Poster_Link']):
                         try:
                             rating_value = row[rating_col] if pd.notna(row[rating_col]) else 0
-                            st.image(row['Poster_Link'], caption=f"{row['Series_Title']} ({rating_value:.1f}⭐)", use_column_width=True)
+                            st.image(row['Poster_Link'], caption=f"{row['Series_Title']} ({rating_value:.1f}⭐)", use_container_width=True)
                         except:
                             st.text(f"{row['Series_Title']}")
                     else:
@@ -218,11 +219,11 @@ def main():
                     }
                 )
             
-            # Analytics section
+            # Analytics section - FIXED VERSION
             st.subheader("📈 Recommendation Insights")
             col1, col2, col3, col4 = st.columns(4)
             
-            # Metrics
+            # Metrics with error handling
             try:
                 avg_rating = results[rating_col].mean()
                 col1.metric("Average Rating", f"{avg_rating:.1f}⭐")
@@ -241,8 +242,9 @@ def main():
                         most_common_genre = pd.Series(genres_list).mode().iloc[0] if len(pd.Series(genres_list).mode()) > 0 else "N/A"
                         col4.metric("Top Genre", most_common_genre)
                 
-                # Charts
+                # Charts - FIXED VERSION
                 col1, col2 = st.columns(2)
+                
                 if genres_list:
                     with col1:
                         st.subheader("🎭 Genre Distribution")
@@ -253,8 +255,21 @@ def main():
                     st.subheader("⭐ Rating Distribution")
                     valid_ratings = results[rating_col].dropna()
                     if len(valid_ratings) > 0:
-                        rating_bins = pd.cut(valid_ratings, bins=5)
-                        rating_dist = rating_bins.value_counts()
+                        # Create simple bins instead of using pd.cut
+                        min_rating = valid_ratings.min()
+                        max_rating = valid_ratings.max()
+                        bins = np.linspace(min_rating, max_rating, 6)
+                        
+                        # Create histogram data
+                        hist_data = np.histogram(valid_ratings, bins=bins)[0]
+                        bin_labels = [f"{bins[i]:.1f}-{bins[i+1]:.1f}" for i in range(len(bins)-1)]
+                        
+                        # Create DataFrame for chart
+                        rating_dist = pd.DataFrame({
+                            'Range': bin_labels,
+                            'Count': hist_data
+                        }).set_index('Range')
+                        
                         st.bar_chart(rating_dist)
                 
             except Exception as e:
