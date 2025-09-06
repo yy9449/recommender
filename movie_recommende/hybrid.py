@@ -12,11 +12,11 @@ class LinearHybridRecommender:
         self.rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
         self.genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
 
-        # Required weights (tuned)
-        self.alpha = 0.45  # Content-based weight
-        self.beta = 0.35   # Collaborative weight
-        self.gamma = 0.15  # Popularity weight
-        self.delta = 0.05  # Recency weight
+        # Required weights
+        self.alpha = 0.4  # Content-based weight
+        self.beta = 0.3   # Collaborative weight
+        self.gamma = 0.2  # Popularity weight
+        self.delta = 0.1  # Recency weight
 
         # Optional: user ratings availability
         self.user_ratings_df = load_user_ratings()
@@ -135,7 +135,7 @@ class LinearHybridRecommender:
 
         if not final_scores:
             return None
-
+        
         top_titles = [t for t, _ in sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]]
         result = self.merged_df[self.merged_df['Series_Title'].isin(top_titles)].copy()
         if result.empty:
