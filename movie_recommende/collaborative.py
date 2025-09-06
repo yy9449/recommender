@@ -9,6 +9,15 @@ import streamlit as st
 
 @st.cache_data
 def load_user_ratings():
+    # First try session state if available
+    try:
+        if 'user_ratings_df' in st.session_state:
+            df = st.session_state['user_ratings_df']
+            if df is not None and not df.empty:
+                return df
+    except Exception:
+        pass
+    # Fallback to local CSV
     try:
         return pd.read_csv('user_movie_rating.csv')
     except Exception:
@@ -75,21 +84,24 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         return None
 
     # Rank by similarity only (pure KNN)
-    sorted_ids = [mid for mid, _ in sorted(neighbors.items(), key=lambda x: x[1], reverse=True)][:top_n]
-    result = merged_df[merged_df['Movie_ID'].isin(sorted_ids)][['Series_Title']]
+    sorted_pairs = sorted(neighbors.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    sorted_ids = [mid for mid, sim in sorted_pairs]
+    sim_by_id = {mid: sim for mid, sim in sorted_pairs}
+    result = merged_df[merged_df['Movie_ID'].isin(sorted_ids)][['Series_Title', 'Movie_ID']]
     # Keep original rating/genre columns if present
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
-    cols = ['Series_Title'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
-    result = result.merge(merged_df[cols].drop_duplicates('Series_Title'), on='Series_Title', how='left')
+    cols = ['Series_Title', 'Movie_ID'] + ([genre_col] if genre_col else []) + ([rating_col] if rating_col else [])
+    result = result.merge(merged_df[cols].drop_duplicates(['Series_Title','Movie_ID']), on=['Series_Title','Movie_ID'], how='left')
 
     # Preserve similarity order
     title_by_id = dict(merged_df[['Movie_ID', 'Series_Title']].values)
     order = {title_by_id[mid]: i for i, mid in enumerate(sorted_ids) if mid in title_by_id}
     result = result.copy()
     result['rank_order'] = result['Series_Title'].map(order)
+    result['Similarity'] = result['Movie_ID'].map(sim_by_id)
     result = result.sort_values('rank_order').drop(columns=['rank_order'])
-    return result
+    return result.drop(columns=['Movie_ID'])
 
 
 @st.cache_data
