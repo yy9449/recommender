@@ -3,5 +3,5 @@ pandas
 numpy
 scikit-learn
 requests
-scikit-surprise
 joblib
+
