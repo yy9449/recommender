@@ -9,6 +9,14 @@ from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import latest content-based helpers to ensure feature parity
+from content_based import (
+	create_content_features,
+	find_rating_column,
+	find_genre_column,
+	find_director_column,
+)
+
 # =============================================================
 # Configuration
 # =============================================================
@@ -44,24 +52,16 @@ def load_datasets():
 # =============================================================
 
 def get_cols(df):
-	genre_col = 'Genre_y' if 'Genre_y' in df.columns else 'Genre'
-	rating_col = 'IMDB_Rating' if 'IMDB_Rating' in df.columns else 'Rating'
+	genre_col = find_genre_column(df)
+	rating_col = find_rating_column(df)
 	year_col = 'Released_Year' if 'Released_Year' in df.columns else 'Year'
 	votes_col = 'No_of_Votes' if 'No_of_Votes' in df.columns else 'Votes'
 	return genre_col, rating_col, year_col, votes_col
 
 
 def build_content_matrix(merged):
-	genre_col, _, _, _ = get_cols(merged)
-	# Build TF-IDF on combined metadata: overview + genre + director + stars
-	text_corpus = (
-		merged.get('Overview_y', merged.get('Overview_x', merged.get('Overview', ''))).fillna('').astype(str) + ' ' +
-		merged[genre_col].fillna('').astype(str) + ' ' +
-		merged.get('Director_y', merged.get('Director_x', merged.get('Director', ''))).fillna('').astype(str) + ' ' +
-		(merged.get('Stars', '').fillna('') + ' ' + merged.get('Star1', '').fillna('') + ' ' + merged.get('Star2', '').fillna('') + ' ' + merged.get('Star3', '').fillna('') + ' ' + merged.get('Star4', '').fillna('')).astype(str)
-	)
-	vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), min_df=2)
-	X = vectorizer.fit_transform(text_corpus)
+	# Use the latest content feature builder (title + genre + director + rating token)
+	X = create_content_features(merged)
 	return X
 
 
@@ -180,7 +180,7 @@ def evaluate_models():
 	title_to_movieid = {v: k for k, v in movieid_to_title.items()}
 	user_train = train_df.groupby('User_ID')
 
-	# Precompute user profile vectors for content-based: average of liked items
+	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
 	for user_id, grp in user_train:
 		liked_movie_ids = grp[grp['Rating'] >= RATING_THRESHOLD]['Movie_ID'].tolist()
