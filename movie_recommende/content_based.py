@@ -185,7 +185,7 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         # TF-IDF on core tags (genres + director + title root) and cosine similarity
         tag_features = create_content_features(merged_df)
         target_loc = merged_df.index.get_loc(target_idx)
-        sims = cosine_similarity([tag_features[target_loc]], tag_features).flatten()
+        sims = cosine_similarity(tag_features[target_loc], tag_features).flatten()
         # Boost by normalized genre Jaccard
         genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
         all_genres_norm = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
@@ -234,7 +234,7 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
             # fallback: return top popular genres
             candidates = list(range(len(tokens_per_row)))
         # cosine
-        sims = cosine_similarity([q_vec], bin_mat).flatten()
+        sims = cosine_similarity(q_vec.reshape(1, -1), bin_mat).flatten()
         scored = []
         for idx, cand_tokens in enumerate(tokens_per_row):
             cand_set = set(cand_tokens)
