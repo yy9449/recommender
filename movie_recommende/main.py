@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
+from collaborative import collaborative_filtering_enhanced
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
@@ -37,7 +37,6 @@ def load_csv_from_github(file_url, file_name):
         csv_content = io.StringIO(response.text)
         df = pd.read_csv(csv_content)
         
-        # Silent success - no st.success message
         return df
         
     except requests.exceptions.RequestException as e:
@@ -67,6 +66,10 @@ def get_and_prepare_data():
     if movies_df is None or imdb_df is None:
         return None, None
 
+    # Add Movie_ID to movies_df if it doesn't exist
+    if 'Movie_ID' not in movies_df.columns:
+        movies_df['Movie_ID'] = range(len(movies_df))
+
     # Merge dataframes
     merged_df = pd.merge(movies_df, imdb_df, on='Series_Title', how='left')
     
@@ -76,6 +79,10 @@ def get_and_prepare_data():
         if col_y in merged_df.columns and col_x in merged_df.columns:
             merged_df[col] = merged_df[col_y].fillna(merged_df[col_x])
             merged_df.drop(columns=[col_x, col_y], inplace=True)
+        elif col_x in merged_df.columns:
+            merged_df[col] = merged_df[col_x]
+        elif col_y in merged_df.columns:
+            merged_df[col] = merged_df[col_y]
             
     # Ensure Movie_ID exists
     if 'Movie_ID' not in merged_df.columns:
@@ -104,8 +111,16 @@ def main():
     movie_list = sorted(merged_df['Series_Title'].dropna().unique())
     movie_title = st.sidebar.selectbox("Select a Movie You Like", options=movie_list, index=None, placeholder="Type or select a movie...")
     
-    unique_genres = sorted(list(set(g for sublist in merged_df['Genre'].dropna().str.split(', ') for g in sublist)))
-    genre_input = st.sidebar.selectbox("Or, Pick a Genre", options=unique_genres, index=None, placeholder="Select a genre...")
+    # Handle genre extraction safely
+    genre_list = []
+    for genres in merged_df['Genre'].dropna():
+        if isinstance(genres, str):
+            genre_list.extend([g.strip() for g in genres.split(',')])
+    unique_genres = sorted(list(set(genre_list))) if genre_list else []
+    
+    genre_input = None
+    if unique_genres:
+        genre_input = st.sidebar.selectbox("Or, Pick a Genre", options=unique_genres, index=None, placeholder="Select a genre...")
 
     top_n = st.sidebar.slider("Number of Recommendations", 5, 20, 10)
     
@@ -122,49 +137,53 @@ def main():
         with st.spinner("🎬 Generating personalized recommendations..."):
             
             if algorithm == "Content-Based":
-                if movie_title or genre_input:
-                    results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
+                if movie_title:
+                    results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
+                else:
+                    st.error("❌ Content-Based filtering requires a movie selection.")
             
             elif algorithm == "Collaborative Filtering":
                 if movie_title and user_ratings_df is not None:
                     results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
+                elif user_ratings_df is None:
+                    st.error("❌ User ratings data could not be loaded.")
+                else:
+                    st.error("❌ Collaborative Filtering requires a movie selection.")
 
             elif algorithm == "Hybrid":
-                # ==========================================================
-                # --- START OF THE ONLY FIX ---
-                # ==========================================================
-                # 1. ADDED CHECKS: The hybrid function needs a movie title and user ratings data.
                 if not movie_title:
                     st.error("❌ The Hybrid algorithm requires a movie title to be selected.")
                 elif user_ratings_df is None:
                     st.error("❌ The Hybrid algorithm requires user ratings data, which could not be loaded.")
                 else:
-                    # 2. CORRECTED FUNCTION CALL: The arguments now correctly match what `hybrid.py` expects.
                     results = smart_hybrid_recommendation(
                         merged_df, 
                         user_ratings_df, 
                         movie_title, 
                         top_n
                     )
-                # ==========================================================
-                # --- END OF THE ONLY FIX ---
-                # ==========================================================
         
-        # --- Display Results (Your Original Code) ---
+        # --- Display Results ---
         if results is not None and not results.empty:
             st.subheader("🎬 Recommended Movies")
             
             # Determine correct column names
             rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
-            genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre'
+            genre_col = 'Genre'
             
             # Display posters
             num_cols = 5
             cols = st.columns(num_cols)
-            for i, row in results.head(num_cols).iterrows():
+            for i, (idx, row) in enumerate(results.head(num_cols).iterrows()):
                 with cols[i % num_cols]:
                     if 'Poster_Link' in row and pd.notna(row['Poster_Link']):
-                        st.image(row['Poster_Link'], caption=f"{row['Series_Title']} ({row[rating_col]:.1f}⭐)", use_column_width=True)
+                        try:
+                            rating_value = row[rating_col] if pd.notna(row[rating_col]) else 0
+                            st.image(row['Poster_Link'], caption=f"{row['Series_Title']} ({rating_value:.1f}⭐)", use_column_width=True)
+                        except:
+                            st.text(f"{row['Series_Title']}")
+                    else:
+                        st.text(f"{row['Series_Title']}")
 
             # Detailed information expander
             with st.expander("📊 View Detailed Information", expanded=False):
@@ -176,17 +195,12 @@ def main():
                     rating_col: 'IMDB Rating'
                 })
                 
-                # Add rank and movie ID
+                # Add rank
                 display_results.insert(0, 'Rank', range(1, len(display_results) + 1))
-                if 'Movie_ID' in merged_df.columns:
-                    movie_ids = []
-                    for _, row in results.iterrows():
-                        movie_info = merged_df[merged_df['Series_Title'] == row['Series_Title']]
-                        if not movie_info.empty:
-                            movie_ids.append(movie_info.iloc[0]['Movie_ID'])
-                        else:
-                            movie_ids.append('N/A')
-                    display_results.insert(1, 'Movie ID', movie_ids)
+                
+                # Add movie ID if available
+                if 'Movie_ID' in results.columns:
+                    display_results.insert(1, 'Movie ID', results['Movie_ID'])
                 
                 st.dataframe(
                     display_results,
@@ -194,7 +208,7 @@ def main():
                     hide_index=True,
                     column_config={
                         "Rank": st.column_config.NumberColumn(format="%d"),
-                        "Movie ID": st.column_config.NumberColumn(format="%d"),
+                        "Movie ID": st.column_config.NumberColumn(format="%d") if 'Movie_ID' in results.columns else None,
                         "IMDB Rating": st.column_config.NumberColumn(format="%.1f⭐")
                     }
                 )
@@ -204,36 +218,42 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
             
             # Metrics
-            avg_rating = results[rating_col].mean()
-            col1.metric("Average Rating", f"{avg_rating:.1f}⭐")
-            col2.metric("Total Recommendations", len(results))
-            max_rating = results[rating_col].max()
-            col3.metric("Highest Rating", f"{max_rating:.1f}⭐")
-            
-            genres_list = [g.strip() for sublist in results[genre_col].dropna().str.split(',') for g in sublist]
-            if genres_list:
-                most_common_genre = pd.Series(genres_list).mode().iloc[0]
-                col4.metric("Top Genre", most_common_genre)
-            
-            # Charts
-            col1, col2 = st.columns(2)
-            if genres_list:
-                with col1:
-                    st.subheader("🎭 Genre Distribution")
-                    genre_counts = pd.Series(genres_list).value_counts().head(8)
-                    st.bar_chart(genre_counts)
-            with col2:
-                st.subheader("⭐ Rating Distribution")
-                rating_bins = pd.cut(results[rating_col], bins=5)
-                rating_dist = rating_bins.value_counts()
-                st.bar_chart(rating_dist)
-            
-            # Combination analysis
-            if movie_title and genre_input:
-                st.subheader("🎯 Input Combination Analysis")
-                genre_matches = sum(1 for _, row in results.iterrows() if genre_input.lower() in str(row[genre_col]).lower())
-                match_percentage = (genre_matches / len(results)) * 100
-                st.info(f"📊 {genre_matches}/{len(results)} recommendations ({match_percentage:.1f}%) match your selected genre '{genre_input}'")
+            try:
+                avg_rating = results[rating_col].mean()
+                col1.metric("Average Rating", f"{avg_rating:.1f}⭐")
+                col2.metric("Total Recommendations", len(results))
+                max_rating = results[rating_col].max()
+                col3.metric("Highest Rating", f"{max_rating:.1f}⭐")
+                
+                # Genre analysis
+                if genre_col in results.columns:
+                    genres_list = []
+                    for genres in results[genre_col].dropna():
+                        if isinstance(genres, str):
+                            genres_list.extend([g.strip() for g in genres.split(',')])
+                    
+                    if genres_list:
+                        most_common_genre = pd.Series(genres_list).mode().iloc[0] if len(pd.Series(genres_list).mode()) > 0 else "N/A"
+                        col4.metric("Top Genre", most_common_genre)
+                
+                # Charts
+                col1, col2 = st.columns(2)
+                if genres_list:
+                    with col1:
+                        st.subheader("🎭 Genre Distribution")
+                        genre_counts = pd.Series(genres_list).value_counts().head(8)
+                        st.bar_chart(genre_counts)
+                        
+                with col2:
+                    st.subheader("⭐ Rating Distribution")
+                    valid_ratings = results[rating_col].dropna()
+                    if len(valid_ratings) > 0:
+                        rating_bins = pd.cut(valid_ratings, bins=5)
+                        rating_dist = rating_bins.value_counts()
+                        st.bar_chart(rating_dist)
+                
+            except Exception as e:
+                st.warning(f"Could not generate all analytics: {str(e)}")
         
         else:
             st.error("❌ No recommendations found. Try different inputs or algorithms.")
