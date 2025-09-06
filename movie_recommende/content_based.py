@@ -128,9 +128,9 @@ def create_content_features(merged_df):
     
     tfidf = TfidfVectorizer(
         stop_words='english',
-        ngram_range=(1, 3),
-        min_df=1,
-        max_df=0.90,
+        ngram_range=(1, 2),
+        min_df=2,
+        max_df=0.80,
         sublinear_tf=True,
         strip_accents='unicode',
         lowercase=True
@@ -194,8 +194,8 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
             # Star overlap ratio
             cand_stars = gather_stars(row)
             star_ratio = len(target_stars & cand_stars) / max(1, len(target_stars)) if target_stars else 0.0
-            # Final boosted score (heavily weight cosine, light boosts for matches)
-            final_score = 0.75 * base_sim + 0.15 * genre_ratio + 0.05 * director_score + 0.05 * star_ratio
+            # Final boosted score (tighten precision by boosting strong genre/star matches)
+            final_score = 0.70 * base_sim + 0.20 * genre_ratio + 0.05 * director_score + 0.05 * star_ratio
             scored.append((final_score, idx))
         
         scored.sort(key=lambda x: x[0], reverse=True)
