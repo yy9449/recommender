@@ -519,6 +519,7 @@ def main():
                             )
                         except:
                             # Fallback to content-based
+                            st.error(f"Hybrid filtering failed with error: {str(e)}")
                             st.info("Hybrid filtering failed, falling back to content-based recommendations.")
                             results = simple_content_based(
                                 merged_df,
