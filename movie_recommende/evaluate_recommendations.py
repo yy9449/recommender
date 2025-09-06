@@ -14,7 +14,7 @@ from sklearn.metrics import (
 )
 
 # Import recommenders (they use Streamlit caches internally; fine for CLI use)
-from content_based import content_based_filtering_enhanced, create_content_features
+from content_based import content_based_filtering_enhanced
 from collaborative import collaborative_filtering_enhanced
 from hybrid import smart_hybrid_recommendation
 
@@ -137,76 +137,63 @@ def evaluate_algorithm(
         u_pos = ugrp[ugrp["Rating"] >= thr]
         u_neg = ugrp[ugrp["Rating"] < thr]
 
-        # Try up to 3 top positive seeds per user
-        used_rec_ids = set()
+        # Pick a seed positive movie that exists in merged
+        seed_mid = None
         if not u_pos.empty:
-            u_pos_sorted = u_pos.sort_values("Rating", ascending=False).head(3)
-        else:
-            u_pos_sorted = pd.DataFrame(columns=u_pos.columns)
+            # Highest rated first
+            u_pos_sorted = u_pos.sort_values("Rating", ascending=False)
+            for _, r in u_pos_sorted.iterrows():
+                cand_mid = int(r["Movie_ID"]) if "Movie_ID" in r else None
+                if cand_mid in id_to_title:
+                    seed_mid = cand_mid
+                    break
+        if seed_mid is None:
+            continue
 
-        for _, r in u_pos_sorted.iterrows():
-            seed_mid = int(r["Movie_ID"]) if "Movie_ID" in r else None
-            if seed_mid is None or seed_mid not in id_to_title:
-                continue
-            seed_title = id_to_title[seed_mid]
+        seed_title = id_to_title[seed_mid]
 
-            # Generate expanded recommendations to maximize overlap during evaluation
-            if algo_name == "Content-Based":
-                rec_df = content_based_filtering_enhanced(merged, target_movie=seed_title, genre=None, top_n=top_n * 50)
-                # Fallback: rank within user's rated set using content cosine if still no recs
-                if (rec_df is None or rec_df.empty):
-                    rec_df = _fallback_content_within_rated(merged, seed_title, set(ugrp["Movie_ID"].tolist()), rating_col, top_n * 10)
-            elif algo_name == "Collaborative":
-                rec_df = collaborative_filtering_enhanced(merged, target_movie=seed_title, top_n=top_n * 50)
-            else:  # Hybrid
-                rec_df = smart_hybrid_recommendation(merged, target_movie=seed_title, genre=None, top_n=top_n * 50)
+        # Generate recommendations
+        if algo_name == "Content-Based":
+            rec_df = content_based_filtering_enhanced(merged, target_movie=seed_title, genre=None, top_n=top_n)
+        elif algo_name == "Collaborative":
+            rec_df = collaborative_filtering_enhanced(merged, target_movie=seed_title, top_n=top_n)
+        else:  # Hybrid
+            rec_df = smart_hybrid_recommendation(merged, target_movie=seed_title, genre=None, top_n=top_n)
 
-            if rec_df is None or rec_df.empty:
-                continue
+        if rec_df is None or rec_df.empty:
+            continue
 
-            rec_titles = [str(t) for t in rec_df["Series_Title"].tolist() if pd.notna(t)]
-            rec_ids = [title_to_id[t.lower()] for t in rec_titles if t.lower() in title_to_id]
+        rec_titles = [str(t) for t in rec_df["Series_Title"].tolist() if pd.notna(t)]
+        rec_ids = [title_to_id[t.lower()] for t in rec_titles if t.lower() in title_to_id]
 
-            # Restrict to items this user has rated for evaluation
-            rated_rec = ugrp[ugrp["Movie_ID"].isin(rec_ids)]
-            if rated_rec.empty and algo_name == "Content-Based":
-                # Strict fallback: generate recommendations only from the user's rated set
-                rec_df = _fallback_content_within_rated(merged, seed_title, set(ugrp["Movie_ID"].tolist()), rating_col, top_n * 10)
-                if rec_df is not None and not rec_df.empty:
-                    rec_titles = [str(t) for t in rec_df["Series_Title"].tolist() if pd.notna(t)]
-                    rec_ids = [title_to_id[t.lower()] for t in rec_titles if t.lower() in title_to_id]
-                    rated_rec = ugrp[ugrp["Movie_ID"].isin(rec_ids)]
+        # Positive predictions: recommended items rated by the same user
+        rated_rec = ugrp[ugrp["Movie_ID"].isin(rec_ids)]
+        for _, rr in rated_rec.iterrows():
+            actual = 1 if rr["Rating"] >= thr else 0
+            y_true.append(actual)
+            y_pred.append(1)  # recommended => predicted positive
 
-            # Add positives from overlap
-            for _, rr in rated_rec.iterrows():
-                mid = int(rr["Movie_ID"]) if "Movie_ID" in rr else None
-                if mid in used_rec_ids:
-                    continue
-                used_rec_ids.add(mid)
-                actual = 1 if rr["Rating"] >= thr else 0
-                y_true.append(actual)
-                y_pred.append(1)
+            # Predicted rating proxy from dataset ratings (scaled to user scale)
+            mid = int(rr["Movie_ID"]) if "Movie_ID" in rr else None
+            if mid in id_to_title and rating_col in merged.columns:
+                title = id_to_title[mid]
+                row = merged[merged["Series_Title"] == title]
+                if not row.empty:
+                    ds_rating = float(row.iloc[0][rating_col]) if pd.notna(row.iloc[0][rating_col]) else np.nan
+                    pr = scale_dataset_rating_to_user_scale(ds_rating, user_max)
+                    if not np.isnan(pr):
+                        true_ratings.append(float(rr["Rating"]))
+                        pred_ratings.append(pr)
 
-                # Predicted rating proxy for MSE/RMSE
-                if mid in id_to_title and rating_col in merged.columns:
-                    title = id_to_title[mid]
-                    row = merged[merged["Series_Title"] == title]
-                    if not row.empty:
-                        ds_rating = float(row.iloc[0][rating_col]) if pd.notna(row.iloc[0][rating_col]) else np.nan
-                        pr = scale_dataset_rating_to_user_scale(ds_rating, user_max)
-                        if not np.isnan(pr):
-                            true_ratings.append(float(rr["Rating"]))
-                            pred_ratings.append(pr)
-
-            # Add matched negatives of equal count
-            num_pos_samples = len(used_rec_ids)
-            if num_pos_samples > 0 and not u_neg.empty:
-                cand_negs = u_neg[~u_neg["Movie_ID"].isin(list(used_rec_ids))]
-                if not cand_negs.empty:
-                    sampled = cand_negs.sample(n=min(num_pos_samples, len(cand_negs)), random_state=42)
-                    for _, rn in sampled.iterrows():
-                        y_true.append(0)
-                        y_pred.append(0)
+        # Negative predictions: sample same number of user's negatives not in recs
+        num_pos_samples = len(rated_rec)
+        if num_pos_samples > 0 and not u_neg.empty:
+            cand_negs = u_neg[~u_neg["Movie_ID"].isin(rec_ids)]
+            if not cand_negs.empty:
+                sampled = cand_negs.sample(n=min(num_pos_samples, len(cand_negs)), random_state=42)
+                for _, rn in sampled.iterrows():
+                    y_true.append(0)
+                    y_pred.append(0)  # not recommended => predicted negative
 
     # Metrics
     if not y_true:
@@ -231,34 +218,6 @@ def evaluate_algorithm(
         "mse": mse,
         "rmse": rmse,
     }
-
-
-def _fallback_content_within_rated(merged: pd.DataFrame, seed_title: str, rated_ids: set, rating_col: str, top_n: int = 50) -> pd.DataFrame | None:
-    """Evaluation-only: rank user's rated items by content cosine to ensure overlap for scoring."""
-    try:
-        if not rated_ids:
-            return None
-        features = create_content_features(merged)
-        # Map title to index
-        idx_series = merged.index
-        seed_idx = merged[merged['Series_Title'].str.lower() == seed_title.lower()].index
-        if seed_idx.empty:
-            return None
-        seed_loc = idx_series.get_loc(seed_idx[0])
-        sims = cosine_similarity([features[seed_loc]], features).flatten()
-        # Filter to rated ids
-        rated_mask = merged['Movie_ID'].isin(rated_ids) if 'Movie_ID' in merged.columns else pd.Series([False]*len(merged))
-        candidate_indices = np.where(rated_mask.values)[0]
-        scored = [(float(sims[i]), i) for i in candidate_indices if i != seed_loc]
-        if not scored:
-            return None
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_indices = [i for _, i in scored[:top_n]]
-        genre_col = 'Genre_y' if 'Genre_y' in merged.columns else 'Genre'
-        result_df = merged.iloc[top_indices]
-        return result_df[['Series_Title', genre_col, rating_col]]
-    except Exception:
-        return None
 
 
 def main():

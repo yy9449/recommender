@@ -1,256 +1,202 @@
 import pandas as pd
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-import re
-from difflib import get_close_matches
 import streamlit as st
+import re
+from typing import List, Optional, Tuple
 
-def safe_convert_to_numeric(value, default=None):
-    """Safely convert a value to numeric, handling strings and NaN"""
-    if pd.isna(value):
+
+def _get_columns(df: pd.DataFrame) -> Tuple[str, str, str]:
+    """Pick canonical column names present in the merged dataframe."""
+    genre_col = 'Genre_y' if 'Genre_y' in df.columns else 'Genre'
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in df.columns else 'Rating'
+    director_col = 'Director_y' if 'Director_y' in df.columns else 'Director'
+    return genre_col, rating_col, director_col
+
+
+def _normalize_text(value: Optional[str]) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ''
+    return str(value).strip().lower()
+
+
+def _normalize_genres(value: Optional[str]) -> List[str]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    text = str(value)
+    parts = [p.strip() for p in text.split(',') if p and p.strip()]
+    tokens = []
+    for p in parts:
+        t = p.replace('-', ' ').replace('_', ' ').strip().lower()
+        t = re.sub(r"\s+", " ", t)
+        if t:
+            tokens.append(t)
+    return tokens
+
+
+def _to_float(value, default: Optional[float] = None) -> Optional[float]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return default
-    
     if isinstance(value, (int, float)):
-        return float(value)
-    
-    if isinstance(value, str):
-        # Remove any non-numeric characters except decimal point
-        clean_value = re.sub(r'[^\d.-]', '', str(value))
         try:
-            return float(clean_value) if clean_value else default
-        except (ValueError, TypeError):
+            return float(value)
+        except Exception:
             return default
-    
+    s = str(value)
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not m:
+        return default
+    try:
+        return float(m.group(0))
+    except Exception:
     return default
 
-def find_similar_titles(input_title, titles_list, cutoff=0.6):
-    """Enhanced fuzzy matching for movie titles"""
-    if not input_title or not titles_list:
-        return []
-    
-    input_lower = input_title.lower().strip()
-    
-    # Direct match
-    exact_matches = [title for title in titles_list if title.lower() == input_lower]
-    if exact_matches:
-        return exact_matches
-    
-    # Partial match
-    partial_matches = []
-    for title in titles_list:
-        title_lower = title.lower()
-        if input_lower in title_lower:
-            partial_matches.append((title, len(input_lower) / len(title_lower)))
-        elif title_lower in input_lower:
-            partial_matches.append((title, len(title_lower) / len(input_lower)))
-            
-    if partial_matches:
-        # Sort by match ratio
-        partial_matches.sort(key=lambda x: x[1], reverse=True)
-        return [match[0] for match in partial_matches]
 
-    # Close matches
-    return get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
+def _rating_bounds(df: pd.DataFrame, rating_col: str) -> Tuple[Optional[float], Optional[float]]:
+    vals = df[rating_col].apply(lambda v: _to_float(v, None))
+    vals = vals.dropna()
+    if vals.empty:
+        return None, None
+    return float(vals.min()), float(vals.max())
 
-@st.cache_data
-def create_content_features(merged_df):
-    """Create TF-IDF features from core tags: normalized genres, director, and title root."""
-    
-    def normalize_name(text: str) -> str:
-        return re.sub(r"\s+", "_", str(text).strip().lower())
 
-    def normalize_title_root(title: str) -> str:
-        t = str(title).lower().strip()
-        # Remove common sequel indicators and digits
-        t = re.sub(r"\b(part|chapter|episode|vol|volume)\b\s*[ivx0-9]*", "", t)
-        t = re.sub(r"[\-_:]", " ", t)
-        t = re.sub(r"\b(i{1,3}|iv|v|vi{0,3}|vii{0,2}|ix|x)\b", "", t)  # roman numerals
-        t = re.sub(r"\d+", "", t)
-        t = re.sub(r"\s+", " ", t).strip()
-        return t
+def _jaccard(a: List[str], b: List[str]) -> float:
+    set_a, set_b = set(a), set(b)
+    if not set_a or not set_b:
+        return 0.0
+    inter = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return (inter / union) if union > 0 else 0.0
 
-    def build_tokens(row) -> str:
-        tokens = []
-        # Genres
-        genre_val = row.get('Genre_y', row.get('Genre_x', row.get('Genre', '')))
-        for g in normalize_genre_tokens(genre_val):
-            tokens.append(f"genre_{g.replace(' ', '_')}")
-        # Director
-        director_val = row.get('Director_y', row.get('Director_x', row.get('Director', '')))
-        if pd.notna(director_val) and str(director_val).strip():
-            tokens.append(f"dir_{normalize_name(director_val)}")
-        # Title root (captures sequels like "deadpool 2")
-        title = row.get('Series_Title', '')
-        if pd.notna(title) and str(title).strip():
-            root = normalize_title_root(title)
-            if root:
-                tokens.append(f"title_root_{normalize_name(root)}")
-        return ' '.join(tokens)
 
-    # Create a new column with combined features
-    merged_df['combined_features'] = merged_df.apply(build_tokens, axis=1)
-    
-    tfidf = TfidfVectorizer(
-        stop_words=None,
-        ngram_range=(1, 2),
-        min_df=1,
-        max_df=0.90,
-        sublinear_tf=True,
-        strip_accents=None,
-        lowercase=True
-    )
-    return tfidf.fit_transform(merged_df['combined_features'])
+def _score_movie_to_movie(
+    target_genres: List[str],
+    target_director: str,
+    target_rating: Optional[float],
+    cand_genres: List[str],
+    cand_director: str,
+    cand_rating: Optional[float],
+    rating_min: Optional[float],
+    rating_max: Optional[float],
+) -> float:
+    # Genre similarity via Jaccard
+    genre_sim = _jaccard(target_genres, cand_genres)
 
-def normalize_genre_tokens(text):
-    """Normalize genre labels to a consistent vocabulary."""
-    raw = [g.strip().lower() for g in str(text).split(',') if g and g.strip()]
-    norm = []
-    for g in raw:
-        s = g.replace('-', ' ').replace('_', ' ').strip()
-        if s in ("sci fi", "science fiction", "scifi", "sci-fi"):
-            s = "sci fi"
-        if s in ("film noir",):
-            s = "noir"
-        if s in ("musical",):
-            s = "music"
-        if s in ("romcom", "rom com", "rom-com"):
-            s = "rom com"
-        if s in ("super hero", "super-hero", "superhero"):
-            s = "superhero"
-        if s in ("biopic",):
-            s = "biography"
-        norm.append(s)
-    return norm
+    # Director match (exact, normalized)
+    director_sim = 1.0 if target_director and (target_director == cand_director) else 0.0
 
-@st.cache_data
-def create_genre_features(merged_df):
-    """Create TF-IDF features using only normalized genres and return the fitted vectorizer too."""
-    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-    vectorizer = TfidfVectorizer(
-        tokenizer=normalize_genre_tokens,
-        preprocessor=None,
-        token_pattern=None,
-        lowercase=True,
-        stop_words=None,
-        ngram_range=(1, 2),
-        use_idf=True,
-        sublinear_tf=True,
-        norm='l2',
-        min_df=1,
-        max_df=0.75
-    )
-    tfidf_matrix = vectorizer.fit_transform(merged_df[genre_col].fillna(''))
-    return tfidf_matrix, vectorizer, genre_col
+    # Rating similarity (closer is better), normalized to [0,1]
+    rating_sim = 0.0
+    if (target_rating is not None) and (cand_rating is not None) and (rating_min is not None) and (rating_max is not None) and (rating_max > rating_min):
+        diff = abs(target_rating - cand_rating)
+        rating_sim = 1.0 - (diff / (rating_max - rating_min))
+        rating_sim = max(0.0, min(1.0, rating_sim))
 
-@st.cache_data
-def create_genre_binary_features(merged_df):
-    """Create binary one-hot matrix over normalized genres for basic content-based scoring."""
-    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-    tokens_per_row = merged_df[genre_col].fillna('').apply(normalize_genre_tokens).tolist()
-    # Build vocabulary
-    vocab = {}
-    for toks in tokens_per_row:
-        for t in toks:
-            if t not in vocab:
-                vocab[t] = len(vocab)
-    if not vocab:
-        # Fallback single dummy column
-        mat = np.zeros((len(tokens_per_row), 1), dtype=float)
-        return mat, tokens_per_row, genre_col, vocab
-    mat = np.zeros((len(tokens_per_row), len(vocab)), dtype=float)
-    for i, toks in enumerate(tokens_per_row):
-        for t in toks:
-            j = vocab.get(t)
-            if j is not None:
-                mat[i, j] = 1.0
-    return mat, tokens_per_row, genre_col, vocab
+    # Weighted sum (focus on genres, then director, then rating)
+    return 0.7 * genre_sim + 0.2 * director_sim + 0.1 * rating_sim
 
-@st.cache_data
-def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=8):
-    """Enhanced Content-Based filtering with improved feature engineering and fuzzy matching"""
+
+def _score_genre_query(
+    query_genres: List[str],
+    cand_genres: List[str],
+    cand_rating: Optional[float],
+    rating_min: Optional[float],
+    rating_max: Optional[float],
+) -> float:
+    # Genre similarity is primary; rating lifts higher-rated titles slightly
+    genre_sim = _jaccard(query_genres, cand_genres)
+
+    rating_bonus = 0.0
+    if (cand_rating is not None) and (rating_min is not None) and (rating_max is not None) and (rating_max > rating_min):
+        rating_norm = (cand_rating - rating_min) / (rating_max - rating_min)
+        rating_bonus = max(0.0, min(1.0, rating_norm))
+
+    return 0.9 * genre_sim + 0.1 * rating_bonus
+
+
+def content_based_filtering_enhanced(
+    merged_df: pd.DataFrame,
+    target_movie: Optional[str] = None,
+    genre: Optional[str] = None,
+    top_n: int = 8,
+) -> Optional[pd.DataFrame]:
+    """Basic Content-Based filtering using only Genre, Rating, Director, and Series_Title.
+
+    - If target_movie is provided: find similar movies by genre overlap, same director, and close rating.
+    - If genre is provided (and no target_movie): find movies matching the genre and prefer higher ratings.
+
+    Returns a DataFrame with columns: Series_Title, <Genre Col>, <Rating Col>.
+    """
+    if merged_df is None or merged_df.empty:
+        return None
+
+    genre_col, rating_col, director_col = _get_columns(merged_df)
+
+    # Precompute useful values
+    rating_min, rating_max = _rating_bounds(merged_df, rating_col)
+
     if target_movie:
-        similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
-        if not similar_titles:
+        # Exact match only; main UI passes a selected title
+        mask = merged_df['Series_Title'] == target_movie
+        if not mask.any():
             return None
-        
-        target_title = similar_titles[0]
-        
-        # Ensure the target movie exists in the dataframe
-        if target_title not in merged_df['Series_Title'].values:
-            return None
-            
-        target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
-        
-        # TF-IDF on core tags (genres + director + title root) and cosine similarity
-        tag_features = create_content_features(merged_df)
-        target_loc = merged_df.index.get_loc(target_idx)
-        sims = cosine_similarity(tag_features[target_loc], tag_features).flatten()
-        # Boost by normalized genre Jaccard
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-        all_genres_norm = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
-        target_set = set(all_genres_norm.iloc[target_loc])
-        candidate_k = min(top_n * 10 + 1, len(sims))
-        ranked = np.argsort(-sims)[:candidate_k]
-        scored = []
-        for idx in ranked:
-            if idx == target_loc:
+        target_row = merged_df[mask].iloc[0]
+
+        target_genres = _normalize_genres(target_row.get(genre_col, ''))
+        target_director = _normalize_text(target_row.get(director_col, ''))
+        target_rating = _to_float(target_row.get(rating_col, None), None)
+
+        scores = []
+        for idx, row in merged_df.iterrows():
+            if row['Series_Title'] == target_movie:
                 continue
-            cand_set = set(all_genres_norm.iloc[idx])
-            if not target_set or not cand_set:
-                jacc = 0.0
-            else:
-                inter = len(target_set & cand_set)
-                union = len(target_set | cand_set)
-                jacc = inter / union if union > 0 else 0.0
-            if jacc <= 0:
+            cand_genres = _normalize_genres(row.get(genre_col, ''))
+            # require at least one shared genre to keep it simple and relevant
+            if _jaccard(target_genres, cand_genres) <= 0.0:
                 continue
-            # rating prior
-            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-            rating_val = merged_df.iloc[idx].get(rating_col, 7.0)
-            try:
-                rating_norm = float(rating_val) / 10.0 if pd.notna(rating_val) else 0.7
-            except Exception:
-                rating_norm = 0.7
-            final_score = 0.70 * float(sims[idx]) + 0.25 * jacc + 0.05 * rating_norm
-            scored.append((final_score, idx))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_indices = [idx for _, idx in scored[:top_n]]
-        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+            cand_director = _normalize_text(row.get(director_col, ''))
+            cand_rating = _to_float(row.get(rating_col, None), None)
+
+            score = _score_movie_to_movie(
+                target_genres,
+                target_director,
+                target_rating,
+                cand_genres,
+                cand_director,
+                cand_rating,
+                rating_min,
+                rating_max,
+            )
+            scores.append((score, idx))
+
+        if not scores:
+            return merged_df.head(0)[['Series_Title', genre_col, rating_col]]  # empty with correct columns
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        top_indices = [idx for _, idx in scores[:top_n]]
         result_df = merged_df.iloc[top_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
     
-    elif genre:
-        # BASIC genre query: Jaccard + cosine over binary genre vectors
-        bin_mat, tokens_per_row, genre_col, vocab = create_genre_binary_features(merged_df)
-        query_tokens = set(normalize_genre_tokens(genre))
-        # build query vector
-        q_vec = np.zeros((bin_mat.shape[1],), dtype=float)
-        for t in query_tokens:
-            j = vocab.get(t)
-            if j is not None:
-                q_vec[j] = 1.0
-        if q_vec.sum() == 0:
-            # fallback: return top popular genres
-            candidates = list(range(len(tokens_per_row)))
-        # cosine
-        sims = cosine_similarity(q_vec.reshape(1, -1), bin_mat).flatten()
-        scored = []
-        for idx, cand_tokens in enumerate(tokens_per_row):
-            cand_set = set(cand_tokens)
-            if not query_tokens or not cand_set:
-                jacc = 0.0
-            else:
-                inter = len(query_tokens & cand_set)
-                union = len(query_tokens | cand_set)
-                jacc = inter / union if union > 0 else 0.0
-            if jacc <= 0:
+    if genre:
+        query_genres = _normalize_genres(genre)
+        scores = []
+        for idx, row in merged_df.iterrows():
+            cand_genres = _normalize_genres(row.get(genre_col, ''))
+            if _jaccard(query_genres, cand_genres) <= 0.0:
                 continue
-            final_score = 0.75 * jacc + 0.25 * float(sims[idx])
-            scored.append((final_score, idx))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_indices = [idx for _, idx in scored[:top_n]]
-        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+            cand_rating = _to_float(row.get(rating_col, None), None)
+            score = _score_genre_query(
+                query_genres,
+                cand_genres,
+                cand_rating,
+                rating_min,
+                rating_max,
+            )
+            scores.append((score, idx))
+
+        if not scores:
+            return merged_df.head(0)[['Series_Title', genre_col, rating_col]]  # empty with correct columns
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        top_indices = [idx for _, idx in scores[:top_n]]
         result_df = merged_df.iloc[top_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
         
