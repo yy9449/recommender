@@ -6,7 +6,6 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, accuracy_score, mean_squared_error
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
-import argparse
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -123,8 +122,6 @@ def compute_popularity_and_recency(merged, ratings_df=None):
 def predict_content_scores(merged, content_matrix):
 	# Return normalized content similarity scores between items
 	sim = cosine_similarity(content_matrix)
-	# Normalize to [0,1]
-	sim = (sim - sim.min()) / (sim.max() - sim.min() + 1e-9)
 	index_by_title = {t: i for i, t in enumerate(merged['Series_Title'])}
 	return sim, index_by_title
 
@@ -174,16 +171,15 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 # Evaluation Pipeline
 # =============================================================
 
-def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAMMA, delta: float = DELTA, rating_threshold: float = RATING_THRESHOLD, classification_mode: str = 'hybrid_threshold'):
+def evaluate_models():
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
 	content_matrix = build_content_matrix(merged)
 	sim_matrix, title_to_idx = predict_content_scores(merged, content_matrix)
-	knn, user_item = build_item_similarity_knn(ratings, merged)
-	popularity, recency = compute_popularity_and_recency(merged, ratings)
-
-	# Split
+	# Split first, then build KNN/popularity on training data to avoid leakage
 	train_df, test_df = split_per_user(ratings)
+	knn, user_item = build_item_similarity_knn(train_df, merged)
+	popularity, recency = compute_popularity_and_recency(merged, train_df)
 
 	# Build quick lookups
 	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
@@ -198,7 +194,7 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 	# Precompute user profile vectors for content-based: average similarity to liked items
 	user_content_pref = {}
 	for user_id, grp in user_train:
-		liked_movie_ids = grp[grp['Rating'] >= rating_threshold]['Movie_ID'].tolist()
+		liked_movie_ids = grp[grp['Rating'] >= RATING_THRESHOLD]['Movie_ID'].tolist()
 		idxs = [title_to_idx.get(movieid_to_title.get(mid, ''), None) for mid in liked_movie_ids]
 		idxs = [i for i in idxs if i is not None]
 		if idxs:
@@ -223,7 +219,7 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 		user = row['User_ID']
 		movie_id = int(row['Movie_ID'])
 		true_rating = float(row['Rating'])
-		true_label = 1 if true_rating >= rating_threshold else 0
+		true_label = 1 if true_rating >= RATING_THRESHOLD else 0
 		title = movieid_to_title.get(movie_id)
 		if title is None or title not in title_to_idx:
 			# skip if not in merged dataset
@@ -255,12 +251,13 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 		# Fallback to item mean if no info
 		if np.isnan(collab_score):
 			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
-			collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
+			collab_score = item_ratings.mean() if not item_ratings.empty else global_mean
 
-		# Normalize content score to rating scale using item rating as quality prior
+		# Normalize content score (cosine in [-1,1]) to rating scale using item rating as quality prior
 		item_quality = merged.loc[merged['Movie_ID'] == movie_id, rating_col]
 		item_quality = float(item_quality.iloc[0]) if not item_quality.empty else 7.0
-		content_rating_est = 2.0 + 8.0 * (content_score)  # map [0,1] -> [2,10]
+		# map cosine similarity s in [-1,1] -> [2,10]: 2 + 8 * ((s+1)/2) = 6 + 4*s
+		content_rating_est = 2.0 + 8.0 * ((content_score + 1.0) / 2.0)
 		content_rating_est = 0.7 * content_rating_est + 0.3 * item_quality
 
 		# Popularity & Recency (0..1) mapped to 2..10
@@ -271,10 +268,10 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 
 		# Hybrid final score (rating prediction)
 		hybrid_pred = (
-			alpha * content_rating_est +
-			beta * collab_score +
-			gamma * pop_rating +
-			delta * rec_rating
+			ALPHA * content_rating_est +
+			BETA * collab_score +
+			GAMMA * pop_rating +
+			DELTA * rec_rating
 		)
 
 		# Clip to rating bounds
@@ -288,16 +285,12 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 		y_pred_reg_collab.append(collab_score)
 		y_pred_reg_hybrid.append(hybrid_pred)
 
-		# Classification label predictions
+		# Classification label predictions (hybrid uses majority vote of signals)
 		y_true_cls.append(true_label)
-		y_pred_cls_content.append(1 if content_rating_est >= rating_threshold else 0)
-		y_pred_cls_collab.append(1 if collab_score >= rating_threshold else 0)
-		if classification_mode == 'majority_vote':
-			votes = int(content_rating_est >= rating_threshold) + int(collab_score >= rating_threshold) + int(hybrid_pred >= rating_threshold)
-			y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
-		else:
-			# Default: threshold on hybrid score so weights directly affect labels
-			y_pred_cls_hybrid.append(1 if hybrid_pred >= rating_threshold else 0)
+		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
+		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
+		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
 	def compute_classification_metrics(y_true, y_pred):
@@ -359,12 +352,4 @@ def evaluate_models(alpha: float = ALPHA, beta: float = BETA, gamma: float = GAM
 
 
 if __name__ == '__main__':
-	parser = argparse.ArgumentParser(description='Evaluate models with adjustable hybrid weights')
-	parser.add_argument('--alpha', type=float, default=ALPHA, help='Content weight (default: 0.4)')
-	parser.add_argument('--beta', type=float, default=BETA, help='Collaborative weight (default: 0.3)')
-	parser.add_argument('--gamma', type=float, default=GAMMA, help='Popularity weight (default: 0.2)')
-	parser.add_argument('--delta', type=float, default=DELTA, help='Recency weight (default: 0.1)')
-	parser.add_argument('--threshold', type=float, default=RATING_THRESHOLD, help='Positive class rating threshold (default: 4.0)')
-	parser.add_argument('--classification_mode', type=str, choices=['hybrid_threshold', 'majority_vote'], default='hybrid_threshold', help='Classification decision rule for hybrid')
-	args = parser.parse_args()
-	evaluate_models(alpha=args.alpha, beta=args.beta, gamma=args.gamma, delta=args.delta, rating_threshold=args.threshold, classification_mode=args.classification_mode)
+	evaluate_models()
