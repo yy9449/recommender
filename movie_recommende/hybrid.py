@@ -1,39 +1,29 @@
-import streamlit as st
+# hybrid.py
+
 import pandas as pd
 import numpy as np
-import warnings
-import requests
-import io
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import streamlit as st
 
-warnings.filterwarnings('ignore')
-
-# Import functions with error handling
-try:
-    from content_based import content_based_filtering_enhanced
-except ImportError:
-    content_based_filtering_enhanced = None
-
-try:
-    from collaborative import collaborative_filtering_enhanced
-except ImportError:
-    collaborative_filtering_enhanced = None
-    
-try:
-    from hybrid import smart_hybrid_recommendation
-except ImportError:
-    smart_hybrid_recommendation = None
-
-# Import column utilities
+# Import column utilities (place column_utils.py in the same directory)
 try:
     from column_utils import (
         get_genre_column, get_overview_column, get_rating_column, 
         get_year_column, get_votes_column, safe_get_column_data,
-        apply_genre_filter, get_movie_display_info
+        apply_genre_filter
     )
 except ImportError:
     # Fallback functions if column_utils.py is not available
     def get_genre_column(df):
         for col in ['Genre', 'Genre_y', 'Genre_x', 'Genres']:
+            if col in df.columns:
+                return col
+        return None
+    
+    def get_overview_column(df):
+        for col in ['Overview', 'Overview_y', 'Overview_x', 'Plot', 'Description', 'Summary']:
             if col in df.columns:
                 return col
         return None
@@ -50,165 +40,185 @@ except ImportError:
                 return col
         return None
     
+    def get_votes_column(df):
+        for col in ['No_of_Votes', 'Votes', 'No_of_Votes_y', 'No_of_Votes_x']:
+            if col in df.columns:
+                return col
+        return None
+    
+    def safe_get_column_data(df, column_name, default_value=''):
+        if column_name and column_name in df.columns:
+            return df[column_name].fillna(default_value).astype(str)
+        else:
+            return pd.Series([default_value] * len(df), index=df.index)
+    
     def apply_genre_filter(df, genre_filter):
         genre_col = get_genre_column(df)
         if genre_col:
             return df[df[genre_col].str.contains(genre_filter, case=False, na=False)]
         else:
             return pd.DataFrame()
-    
-    def get_movie_display_info(df, movie_row):
-        rating_col = get_rating_column(df)
-        genre_col = get_genre_column(df)
-        year_col = get_year_column(df)
-        
-        return {
-            'title': movie_row.get('Series_Title', 'Unknown'),
-            'rating': movie_row.get(rating_col, 'N/A') if rating_col else 'N/A',
-            'genre': movie_row.get(genre_col, 'N/A') if genre_col else 'N/A',
-            'year': movie_row.get(year_col, 'N/A') if year_col else 'N/A',
-            'poster': movie_row.get('Poster_Link', '')
-        }
 
-# Backup content-based function
-def simple_content_based(merged_df, target_movie, genre_filter=None, top_n=10):
-    """Simplified content-based filtering using available columns with proper column resolution"""
+# Define recommendation weights
+ALPHA = 0.6  # Content-based (increased since collaborative is limited)
+BETA = 0.2   # Collaborative (reduced due to limitations)
+GAMMA = 0.15 # Popularity
+DELTA = 0.05 # Recency
+
+def _calculate_popularity(df: pd.DataFrame) -> pd.Series:
+    """Calculate popularity score based on votes and ratings"""
+    votes_col = get_votes_column(df)
+    rating_col = get_rating_column(df)
+    
+    if votes_col and rating_col:
+        log_votes = np.log1p(df[votes_col].fillna(0))
+        rating = df[rating_col].fillna(df[rating_col].mean())
+        return rating * log_votes
+    elif rating_col:
+        # If no votes column, use rating only
+        return df[rating_col].fillna(df[rating_col].mean())
+    else:
+        # Return zeros if no rating data
+        return pd.Series([0] * len(df), index=df.index)
+
+def _calculate_recency(df: pd.DataFrame) -> pd.Series:
+    """Calculate recency score based on release year"""
+    year_col = get_year_column(df)
+    current_year = pd.to_datetime('today').year
+    decay_rate = 0.98
+    
+    if year_col:
+        default_year = df[year_col].mode()[0] if not df[year_col].mode().empty else 2000
+        age = current_year - df[year_col].fillna(default_year)
+        return decay_rate ** age
+    else:
+        # Return neutral scores if no year data
+        return pd.Series([0.5] * len(df), index=df.index)
+
+@st.cache_data
+def smart_hybrid_recommendation(
+    merged_df: pd.DataFrame, 
+    user_ratings_df: pd.DataFrame = None,  # Made optional
+    target_movie: str = None,
+    genre_filter: str = None,
+    top_n: int = 10
+):
+    """
+    Generates hybrid recommendations blending multiple strategies.
+    Works with or without user ratings data.
+    """
+    
+    # If neither movie nor genre is provided, return empty
     if not target_movie and not genre_filter:
         return pd.DataFrame()
     
-    # Handle genre-only filtering
+    # Handle genre-only case
     if genre_filter and not target_movie:
-        filtered = apply_genre_filter(merged_df, genre_filter)
-        if not filtered.empty:
-            rating_col = get_rating_column(filtered)
-            if rating_col:
-                filtered = filtered.sort_values(rating_col, ascending=False)
-            return filtered.head(top_n)
-        return pd.DataFrame()
+        genre_filtered = apply_genre_filter(merged_df, genre_filter)
+        
+        if genre_filtered.empty:
+            return pd.DataFrame()
+        
+        # For genre-only, use popularity and recency
+        popularity_scores = _calculate_popularity(genre_filtered)
+        recency_scores = _calculate_recency(genre_filtered)
+        
+        # Scale and combine
+        scaler = MinMaxScaler()
+        scaled_popularity = scaler.fit_transform(popularity_scores.values.reshape(-1, 1)).flatten()
+        scaled_recency = scaler.fit_transform(recency_scores.values.reshape(-1, 1)).flatten()
+        
+        # Weighted combination for genre-only
+        final_scores = 0.7 * scaled_popularity + 0.3 * scaled_recency
+        
+        # Sort and return top results
+        genre_filtered = genre_filtered.copy()
+        genre_filtered['hybrid_score'] = final_scores
+        results = genre_filtered.sort_values('hybrid_score', ascending=False).head(top_n)
+        return results.drop('hybrid_score', axis=1)
     
-    # Movie-based filtering
+    # Movie-based recommendations
     if target_movie not in merged_df['Series_Title'].values:
         return pd.DataFrame()
-    
-    # Simple genre-based similarity
-    target_row = merged_df[merged_df['Series_Title'] == target_movie].iloc[0]
-    genre_col = get_genre_column(merged_df)
-    
-    if not genre_col:
-        return pd.DataFrame()
-    
-    target_genres = str(target_row[genre_col]).split(', ') if pd.notna(target_row[genre_col]) else []
-    
-    # Find movies with similar genres
-    similar_movies = []
-    for idx, row in merged_df.iterrows():
-        if row['Series_Title'] == target_movie:
-            continue
         
-        movie_genres = str(row[genre_col]).split(', ') if pd.notna(row[genre_col]) else []
-        common_genres = set(target_genres) & set(movie_genres)
-        
-        if common_genres:
-            similar_movies.append((idx, len(common_genres)))
-    
-    # Sort by genre similarity and rating
-    similar_movies.sort(key=lambda x: x[1], reverse=True)
-    top_indices = [x[0] for x in similar_movies[:top_n*2]]
-    
-    results = merged_df.loc[top_indices]
-    
-    # Apply genre filter if provided
-    if genre_filter:
-        results = apply_genre_filter(results, genre_filter)
-    
-    # Sort by rating
-    rating_col = get_rating_column(results)
-    if rating_col:
-        results = results.sort_values(rating_col, ascending=False)
-    
-    return results.head(top_n)
+    idx = merged_df[merged_df['Series_Title'] == target_movie].index[0]
 
-# =========================
-# Streamlit Configuration
-# =========================
-st.set_page_config(
-    page_title="🎬 Movie Recommender",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("🎬 Movie Recommendation System")
-st.markdown("---")
-
-# =========================
-# GitHub CSV Loading Functions
-# =========================
-@st.cache_data
-def load_csv_from_github(file_url, file_name):
-    """Load CSV file from GitHub repository - silent version"""
     try:
-        response = requests.get(file_url, timeout=30)
-        response.raise_for_status()
+        # 1. Content Similarity
+        genre_col = get_genre_column(merged_df)
+        overview_col = get_overview_column(merged_df)
         
-        # Read CSV from response content
-        csv_content = io.StringIO(response.text)
-        df = pd.read_csv(csv_content)
+        # Get text data safely
+        overview_text = safe_get_column_data(merged_df, overview_col, '')
+        genre_text = safe_get_column_data(merged_df, genre_col, '')
         
-        # Silent success - no st.success message
-        return df
+        soup = overview_text + ' ' + genre_text
+        tfidf_matrix = TfidfVectorizer(stop_words='english', max_features=5000).fit_transform(soup)
+        content_sim_matrix = cosine_similarity(tfidf_matrix)
+        content_scores = content_sim_matrix[idx]
         
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Failed to load {file_name} from GitHub: {str(e)}")
-        return None
-    except pd.errors.EmptyDataError:
-        st.error(f"❌ {file_name} is empty or corrupted")
-        return None
+        # 2. Collaborative Similarity (simplified version)
+        collab_scores = np.zeros(len(merged_df))
+        if user_ratings_df is not None:
+            try:
+                # Simple collaborative approach based on movie ratings
+                target_movie_id = merged_df.iloc[idx]['Movie_ID']
+                if target_movie_id in user_ratings_df['Movie_ID'].values:
+                    # Get users who rated the target movie highly
+                    high_raters = user_ratings_df[
+                        (user_ratings_df['Movie_ID'] == target_movie_id) & 
+                        (user_ratings_df['Rating'] >= 7)
+                    ]['User_ID'].unique()
+                    
+                    if len(high_raters) > 0:
+                        # Get other movies these users rated highly
+                        similar_movies = user_ratings_df[
+                            (user_ratings_df['User_ID'].isin(high_raters)) & 
+                            (user_ratings_df['Rating'] >= 7)
+                        ]['Movie_ID'].value_counts()
+                        
+                        # Map back to dataframe indices
+                        for movie_id, count in similar_movies.items():
+                            movie_indices = merged_df[merged_df['Movie_ID'] == movie_id].index
+                            if len(movie_indices) > 0:
+                                collab_scores[movie_indices[0]] = count / len(high_raters)
+            except Exception:
+                # If collaborative fails, keep zeros
+                pass
+
+        # 3. Popularity & Recency
+        popularity_scores = _calculate_popularity(merged_df)
+        recency_scores = _calculate_recency(merged_df)
+        
+        # 4. Scale and Combine
+        scaler = MinMaxScaler()
+        scaled_content = scaler.fit_transform(content_scores.reshape(-1, 1)).flatten()
+        scaled_collab = scaler.fit_transform(collab_scores.reshape(-1, 1)).flatten()
+        scaled_popularity = scaler.fit_transform(popularity_scores.values.reshape(-1, 1)).flatten()
+        scaled_recency = scaler.fit_transform(recency_scores.values.reshape(-1, 1)).flatten()
+        
+        final_scores = (
+            ALPHA * scaled_content +
+            BETA * scaled_collab +
+            GAMMA * scaled_popularity +
+            DELTA * scaled_recency
+        )
+        
+        # Get top recommendations (excluding the input movie)
+        sim_scores = sorted(list(enumerate(final_scores)), key=lambda x: x[1], reverse=True)
+        sim_scores = [x for x in sim_scores if x[0] != idx]  # Remove input movie
+        sim_scores = sim_scores[:top_n * 2]  # Get more to allow for genre filtering
+        
+        movie_indices = [i[0] for i in sim_scores]
+        results = merged_df.iloc[movie_indices]
+        
+        # Apply genre filter if provided
+        if genre_filter:
+            results = apply_genre_filter(results, genre_filter)
+        
+        return results.head(top_n)
+    
     except Exception as e:
-        st.error(f"❌ Error processing {file_name}: {str(e)}")
-        return None
-
-@st.cache_data
-def load_and_prepare_data():
-    """Load CSVs from GitHub and prepare data for recommendation algorithms - silent version"""
-    
-    # GitHub raw file URLs - replace with your actual repository URLs
-    github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
-    
-    # File URLs
-    movies_url = github_base_url + "movies.csv"
-    imdb_url = github_base_url + "imdb_top_1000.csv"
-    user_ratings_url = github_base_url + "user_movie_rating.csv"
-    
-    # Silent loading - show minimal progress info
-    with st.spinner("Loading datasets..."):
-        movies_df = load_csv_from_github(movies_url, "movies.csv")
-        imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
-        user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
-    
-    # Check if required files loaded successfully
-    if movies_df is None or imdb_df is None:
-        return None, None, "❌ Required CSV files (movies.csv, imdb_top_1000.csv) could not be loaded from GitHub"
-    
-    # Store user ratings in session state for other functions to access - silent
-    if user_ratings_df is not None:
-        st.session_state['user_ratings_df'] = user_ratings_df
-        # Silent success - no message
-    else:
-        # Only show warning if explicitly needed
-        if 'user_ratings_df' in st.session_state:
-            del st.session_state['user_ratings_df']
-    
-    try:
-        # Validate required columns
-        if 'Series_Title' not in movies_df.columns or 'Series_Title' not in imdb_df.columns:
-            return None, None, "❌ Missing Series_Title column in one or both datasets"
-        
-        # Check if movies.csv has Movie_ID
-        if 'Movie_ID' not in movies_df.columns:
-            movies_df['Movie_ID'] = range(len(movies_df))
-            # Silent addition - no info message
-        
-        # Merge on Series_Title
-        merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
-        merged_df = merged_df
+        # Return empty DataFrame if there's any error
+        print(f"Error in hybrid filtering: {e}")
+        return pd.DataFrame()
