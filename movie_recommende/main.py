@@ -405,7 +405,7 @@ def main():
                 results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
                 if movie_title:
-                    results = collaborative_filtering_enhanced(merged_df, movie_title, top_n)
+                    results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
                 else:
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
