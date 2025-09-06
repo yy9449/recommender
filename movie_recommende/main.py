@@ -517,10 +517,10 @@ def main():
                                 genre_filter=genre_input if genre_input else None,
                                 top_n=top_n
                             )
-                        except:
+                        except Exception as hybrid_error:
                             # Fallback to content-based
-                            st.error(f"Hybrid filtering failed with error: {str(e)}")
-                            st.info("Hybrid filtering failed, falling back to content-based recommendations.")
+                            st.error(f"Hybrid filtering failed with error: {str(hybrid_error)}")
+                            st.info("Falling back to content-based recommendations.")
                             results = simple_content_based(
                                 merged_df,
                                 target_movie=movie_title if movie_title else None,
