@@ -5,7 +5,7 @@ import warnings
 import requests
 import io
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
+from collaborative import collaborative_filtering_enhanced
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
