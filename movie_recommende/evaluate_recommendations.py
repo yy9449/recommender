@@ -297,9 +297,14 @@ def evaluate_models():
 	# Compute metrics
 	def compute_classification_metrics(y_true, y_pred):
 		return {
+			# Positive-class metrics
 			'precision': precision_score(y_true, y_pred, zero_division=0),
 			'recall': recall_score(y_true, y_pred, zero_division=0),
 			'f1': f1_score(y_true, y_pred, zero_division=0),
+			# Weighted metrics for balanced comparison across class imbalance
+			'precision_weighted': precision_score(y_true, y_pred, average='weighted', zero_division=0),
+			'recall_weighted': recall_score(y_true, y_pred, average='weighted', zero_division=0),
+			'f1_weighted': f1_score(y_true, y_pred, average='weighted', zero_division=0),
 			'accuracy': accuracy_score(y_true, y_pred),
 			'report': classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0)
 		}
@@ -333,15 +338,13 @@ def evaluate_models():
 	print(f"Accuracy: {results['Hybrid']['accuracy']:.3f}")
 	print(results['Hybrid']['report'])
 
-	# Summary table with more discriminative metrics and higher precision
+	# Summary table (show weighted precision/recall to better distinguish algorithms)
 	summary_rows = []
 	for name in ['Collaborative', 'Content-Based', 'Hybrid']:
 		row = {
 			'Method Used': name,
-			'Precision': round(results[name]['precision'], 3),
-			'Recall': round(results[name]['recall'], 3),
-			'F1': round(results[name]['f1'], 3),
-			'Accuracy': round(results[name]['accuracy'], 3),
+			'Precision': round(results[name]['precision_weighted'], 3),
+			'Recall': round(results[name]['recall_weighted'], 3),
 			'RMSE': round(results[name]['rmse'], 3),
 			'Notes': (
 				'Worked well with dense ratings' if name == 'Collaborative' else
@@ -350,7 +353,7 @@ def evaluate_models():
 			)
 		}
 		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'F1', 'Accuracy', 'RMSE', 'Notes'])
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
 	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
 
