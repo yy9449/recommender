@@ -1,143 +1,199 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
-from sklearn.neighbors import NearestNeighbors
+from content_based import content_tfidf_advanced, find_rating_column, find_genre_column
+from collaborative import collaborative_knn, load_user_ratings
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
 
-
-def _detect_columns(merged_df: pd.DataFrame):
-    """Detect common column names used across datasets."""
-    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-    year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
-    return rating_col, genre_col, year_col
-
-
-@st.cache_data
-def load_user_ratings() -> pd.DataFrame | None:
-    """Load user ratings from Streamlit session or local CSV if available."""
-    try:
-        # Prefer dataset loaded by main app
-        if 'user_ratings_df' in st.session_state and st.session_state['user_ratings_df'] is not None:
-            return st.session_state['user_ratings_df']
-
-        # Fallback: try local CSV
-        try:
-            return pd.read_csv('user_movie_rating.csv')
-        except Exception:
-            return None
-    except Exception:
-        return None
-
-
-def _build_user_item_matrix(user_ratings_df: pd.DataFrame) -> pd.DataFrame:
-    """Create a user-item ratings matrix (users x movies)."""
-    user_item = user_ratings_df.pivot_table(
-        index='User_ID',
-        columns='Movie_ID',
-        values='Rating',
-        fill_value=0
-    )
-    return user_item
-
-
-def _get_movie_id_for_title(merged_df: pd.DataFrame, title: str) -> int | None:
-    """Map a movie title to Movie_ID using the merged dataset."""
-    try:
-        match = merged_df[merged_df['Series_Title'].str.lower() == str(title).lower()]
-        if match.empty:
-            return None
-        if 'Movie_ID' in match.columns:
-            return int(match.iloc[0]['Movie_ID'])
-        # If no Movie_ID present, synthesize a positional index
-        return int(match.index[0])
-    except Exception:
-        return None
-
-
-@st.cache_data
-def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k: int = 20) -> pd.DataFrame | None:
-    """
-    Item-based KNN collaborative filtering.
-
-    - Builds a user-item rating matrix from user ratings
-    - Uses cosine distance KNN to find similar movies to the target
-    - Returns a dataframe with recommended titles and metadata
-    """
-    if not target_movie:
-        return None
-
-    user_ratings_df = load_user_ratings()
-    if user_ratings_df is None or user_ratings_df.empty:
-        return None
-
-    # Ensure Movie_ID exists in merged dataset
-    if 'Movie_ID' not in merged_df.columns:
-        merged_df = merged_df.copy()
-        merged_df['Movie_ID'] = range(len(merged_df))
-
-    user_item = _build_user_item_matrix(user_ratings_df)
-    if user_item.empty or user_item.shape[1] < 2:
-        return None
-
-    target_movie_id = _get_movie_id_for_title(merged_df, target_movie)
-    if target_movie_id is None or target_movie_id not in user_item.columns:
-        return None
-
-    # Fit KNN on item (movie) vectors: shape (n_movies, n_users)
-    item_matrix = user_item.T.values
-    try:
-        knn = NearestNeighbors(metric='cosine', algorithm='brute')
-        knn.fit(item_matrix)
-    except Exception:
-        return None
-
-    # Locate index of target in the item matrix
-    movie_ids = list(user_item.columns)
-    try:
-        target_idx = movie_ids.index(target_movie_id)
-    except ValueError:
-        return None
-
-    distances, indices = knn.kneighbors([item_matrix[target_idx]], n_neighbors=min(k + 1, len(movie_ids)))
-    distances = distances.flatten()
-    indices = indices.flatten()
-
-    # Exclude the target itself (distance=0 at position 0)
-    neighbor_indices = [idx for i, idx in enumerate(indices) if movie_ids[idx] != target_movie_id][:top_n * 2]
-    neighbor_ids = [movie_ids[idx] for idx in neighbor_indices]
-
-    # Build results from neighbors
-    rating_col, genre_col, _ = _detect_columns(merged_df)
-    neighbor_movies = merged_df[merged_df['Movie_ID'].isin(neighbor_ids)].copy()
-    if neighbor_movies.empty:
+class SingleHybridRecommender:
+    def __init__(self, merged_df):
+        self.merged_df = merged_df
+        self.rating_col = find_rating_column(merged_df)
+        self.genre_col = find_genre_column(merged_df)
+        self.user_ratings_df = load_user_ratings()
+        
+        # Hybrid weights for: FinalScore = α×Content + β×CF + γ×Popularity + δ×Recency
+        self.alpha = 0.4  # Content weight
+        self.beta = 0.3   # Collaborative weight
+        self.gamma = 0.2  # Popularity weight
+        self.delta = 0.1  # Recency weight
+    
+    def get_content_scores(self, target_movie, genre, top_n):
+        """Get normalized content-based scores"""
+        content_results = content_tfidf_advanced(self.merged_df, target_movie, genre, top_n * 3)
+        content_scores = {}
+        
+        if content_results is not None and not content_results.empty:
+            max_rating = content_results[self.rating_col].max()
+            for _, movie in content_results.iterrows():
+                title = movie['Series_Title']
+                content_scores[title] = movie[self.rating_col] / max_rating
+        
+        return content_scores
+    
+    def get_collaborative_scores(self, target_movie, top_n):
+        """Get normalized collaborative filtering scores"""
+        cf_scores = {}
+        
+        if target_movie and self.user_ratings_df is not None:
+            cf_results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
+            if cf_results is not None and not cf_results.empty:
+                max_rating = cf_results[self.rating_col].max()
+                for _, movie in cf_results.iterrows():
+                    title = movie['Series_Title']
+                    cf_scores[title] = movie[self.rating_col] / max_rating
+        
+        return cf_scores
+    
+    def get_popularity_scores(self):
+        """Calculate popularity scores using rating and interaction frequency"""
+        popularity_scores = {}
+        
+        for _, movie in self.merged_df.iterrows():
+            title = movie['Series_Title']
+            rating = movie.get(self.rating_col, 7.0)
+            votes = movie.get('No_of_Votes', movie.get('Votes', 1000))
+            
+            if pd.isna(votes):
+                votes = 1000
+            if pd.isna(rating):
+                rating = 7.0
+            
+            # Popularity formula: rating weighted by vote count
+            popularity = rating * np.log10(votes + 1) / 10.0
+            popularity_scores[title] = min(popularity, 1.0)
+        
+        # Boost with user interaction frequency if available
+        if self.user_ratings_df is not None:
+            for movie_id in self.user_ratings_df['Movie_ID'].unique():
+                interaction_count = len(self.user_ratings_df[self.user_ratings_df['Movie_ID'] == movie_id])
+                
+                movie_match = self.merged_df[self.merged_df['Movie_ID'] == movie_id]
+                if not movie_match.empty:
+                    title = movie_match.iloc[0]['Series_Title']
+                    
+                    # Normalize interaction count (max 100 interactions = 1.0)
+                    interaction_score = min(interaction_count / 100.0, 1.0)
+                    
+                    if title in popularity_scores:
+                        # Combine: 60% rating popularity + 40% interaction popularity
+                        popularity_scores[title] = 0.6 * popularity_scores[title] + 0.4 * interaction_score
+        
+        return popularity_scores
+    
+    def get_recency_scores(self):
+        """Calculate recency scores - newer movies get higher weight"""
+        current_year = datetime.now().year
+        recency_scores = {}
+        
+        for _, movie in self.merged_df.iterrows():
+            title = movie['Series_Title']
+            year = movie.get('Released_Year', movie.get('Year', 2000))
+            
+            if pd.isna(year):
+                year = 2000
+            
+            # Exponential decay: newer = higher score
+            year_diff = current_year - year
+            recency_factor = np.exp(-year_diff / 20.0)  # 20-year half-life
+            recency_scores[title] = max(min(recency_factor, 1.0), 0.1)
+        
+        return recency_scores
+    
+    def hybrid_recommend(self, target_movie=None, genre=None, top_n=8):
+        """
+        Main hybrid recommendation using:
+        FinalScore = α×ContentScore + β×CFScore + γ×PopularityScore + δ×RecencyScore
+        """
+        
+        # Get all component scores
+        content_scores = self.get_content_scores(target_movie, genre, top_n)
+        cf_scores = self.get_collaborative_scores(target_movie, top_n)
+        popularity_scores = self.get_popularity_scores()
+        recency_scores = self.get_recency_scores()
+        
+        # Collect all candidate movies
+        all_candidates = set(content_scores.keys()) | set(cf_scores.keys())
+        
+        # Add popular movies if we don't have enough candidates
+        if len(all_candidates) < top_n * 2:
+            popular_movies = sorted(popularity_scores.items(), key=lambda x: x[1], reverse=True)
+            for title, _ in popular_movies[:top_n * 2]:
+                all_candidates.add(title)
+        
+        # Calculate final hybrid scores
+        final_scores = {}
+        
+        for title in all_candidates:
+            # Get individual scores (default to 0 if not available)
+            content_score = content_scores.get(title, 0)
+            cf_score = cf_scores.get(title, 0)
+            popularity_score = popularity_scores.get(title, 0.5)
+            recency_score = recency_scores.get(title, 0.5)
+            
+            # Apply hybrid formula
+            final_score = (self.alpha * content_score + 
+                          self.beta * cf_score + 
+                          self.gamma * popularity_score + 
+                          self.delta * recency_score)
+            
+            # Genre boost: if target movie provided, boost similar genres
+            if target_movie:
+                genre_boost = self.calculate_genre_boost(title, target_movie)
+                final_score *= genre_boost
+            
+            final_scores[title] = final_score
+        
+        # Sort by final score and get top N
+        sorted_movies = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        top_titles = [title for title, _ in sorted_movies]
+        
+        # Create result DataFrame
+        result_df = self.merged_df[self.merged_df['Series_Title'].isin(top_titles)]
+        
+        if result_df.empty:
             return None
         
-    # Preserve neighbor order by KNN
-    order_map = {mid: i for i, mid in enumerate(neighbor_ids)}
-    neighbor_movies['rank_order'] = neighbor_movies['Movie_ID'].map(order_map)
-    neighbor_movies = neighbor_movies.sort_values('rank_order').drop(columns=['rank_order'])
-
-    # Return the top_n
-    cols = [c for c in ['Series_Title', genre_col, rating_col] if c in neighbor_movies.columns]
-    return neighbor_movies[cols].head(top_n)
-
-
-def diagnose_data_linking(merged_df: pd.DataFrame | None = None, user_ratings_df: pd.DataFrame | None = None) -> dict:
-    """Provide basic diagnostics for dataset linking between movies and user ratings."""
-    info = {}
-    try:
-        if merged_df is not None:
-            info['movies_total'] = int(len(merged_df))
-            info['has_movie_id'] = bool('Movie_ID' in merged_df.columns)
-        if user_ratings_df is None and 'user_ratings_df' in st.session_state:
-            user_ratings_df = st.session_state['user_ratings_df']
-        if user_ratings_df is not None:
-            info['ratings_total'] = int(len(user_ratings_df))
-            info['unique_users'] = int(user_ratings_df['User_ID'].nunique()) if 'User_ID' in user_ratings_df.columns else 0
-            info['unique_movies_in_ratings'] = int(user_ratings_df['Movie_ID'].nunique()) if 'Movie_ID' in user_ratings_df.columns else 0
-        if merged_df is not None and user_ratings_df is not None and 'Movie_ID' in merged_df.columns and 'Movie_ID' in user_ratings_df.columns:
-            linked = user_ratings_df['Movie_ID'].isin(set(merged_df['Movie_ID']))
-            info['linked_ratings'] = int(linked.sum())
-        return info
+        # Preserve ranking order
+        title_to_rank = {title: i for i, (title, _) in enumerate(sorted_movies)}
+        result_df = result_df.copy()
+        result_df['rank_order'] = result_df['Series_Title'].map(title_to_rank)
+        result_df = result_df.sort_values('rank_order').drop('rank_order', axis=1)
+        
+        return result_df[['Series_Title', self.genre_col, self.rating_col]]
+    
+    def calculate_genre_boost(self, movie_title, target_movie):
+        """Calculate genre similarity boost"""
+        try:
+            target_row = self.merged_df[self.merged_df['Series_Title'].str.lower() == target_movie.lower()]
+            movie_row = self.merged_df[self.merged_df['Series_Title'] == movie_title]
+            
+            if target_row.empty or movie_row.empty:
+                return 1.0
+            
+            target_genres = str(target_row.iloc[0][self.genre_col]).lower().split(', ')
+            movie_genres = str(movie_row.iloc[0][self.genre_col]).lower().split(', ')
+            
+            # Count matching genres
+            matches = len(set(target_genres) & set(movie_genres))
+            
+            # 15% boost per matching genre
+            return 1.0 + (0.15 * matches)
+            
         except Exception:
-        return info
+            return 1.0
+
+# Main interface function
+@st.cache_data
+def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8):
+    """Single hybrid recommendation system with all advanced features"""
+    recommender = SingleHybridRecommender(merged_df)
+    return recommender.hybrid_recommend(target_movie, genre, top_n)
+
+# Alternative interface for backwards compatibility
+@st.cache_data 
+def advanced_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8):
+    """Alternative interface name"""
+    return smart_hybrid_recommendation(merged_df, target_movie, genre, top_n)

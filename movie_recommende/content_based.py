@@ -63,9 +63,6 @@ def create_content_features(merged_df):
         overview = str(row.get('Overview_y', row.get('Overview_x', '')))
         genre = str(row.get('Genre_y', row.get('Genre_x', '')))
         director = str(row.get('Director_y', row.get('Director_x', '')))
-        certificate = str(row.get('Certificate', ''))
-        year = row.get('Released_Year', row.get('Year', None))
-        runtime = row.get('Runtime', None)
         
         # Combine all available star information
         stars = str(row.get('Stars', '')) # from movies.csv
@@ -79,61 +76,14 @@ def create_content_features(merged_df):
         overview = overview if pd.notna(overview) else ''
         genre = genre if pd.notna(genre) else ''
         director = director if pd.notna(director) else ''
-        certificate = certificate if pd.notna(certificate) else ''
-
-        # Derive decade token
-        decade_token = ''
-        try:
-            y = int(year) if pd.notna(year) else None
-            if y and y > 1900:
-                decade = (y // 10) * 10
-                decade_token = f"decade_{decade}s"
-        except Exception:
-            decade_token = ''
-
-        # Derive runtime bucket token (if runtime provided as "123 min" or number)
-        runtime_token = ''
-        try:
-            if isinstance(runtime, str):
-                m = re.search(r'(\d+)', runtime)
-                runtime_val = int(m.group(1)) if m else None
-            else:
-                runtime_val = int(runtime) if pd.notna(runtime) else None
-            if runtime_val:
-                if runtime_val < 90:
-                    runtime_token = 'runtime_<90'
-                elif runtime_val <= 120:
-                    runtime_token = 'runtime_90_120'
-                else:
-                    runtime_token = 'runtime_>120'
-        except Exception:
-            runtime_token = ''
 
         # Apply weights
-        tokens = []
-        tokens.extend([overview] * 3)
-        tokens.extend([genre] * 3)
-        tokens.extend([director] * 2)
-        tokens.extend([all_stars] * 2)
-        if certificate:
-            tokens.extend([f"cert_{certificate}"])
-        if decade_token:
-            tokens.append(decade_token)
-        if runtime_token:
-            tokens.append(runtime_token)
-        return ' '.join(tokens)
+        return ' '.join([overview]*3 + [genre]*2 + [director]*2 + [all_stars])
 
     # Create a new column with combined features
     merged_df['combined_features'] = merged_df.apply(combine_features, axis=1)
     
-    tfidf = TfidfVectorizer(
-        stop_words='english',
-        ngram_range=(1, 2),
-        min_df=2,
-        max_df=0.85,
-        sublinear_tf=True,
-        strip_accents='unicode'
-    )
+    tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), min_df=2)
     return tfidf.fit_transform(merged_df['combined_features'])
 
 @st.cache_data
