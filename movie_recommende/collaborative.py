@@ -103,8 +103,13 @@ def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str,
     indices = indices.flatten()
 
     # Exclude the target itself (distance=0 at position 0)
-    neighbor_indices = [idx for i, idx in enumerate(indices) if movie_ids[idx] != target_movie_id][:top_n * 2]
+    neighbor_pairs = [(idx, distances[i]) for i, idx in enumerate(indices) if movie_ids[idx] != target_movie_id]
+    neighbor_pairs = neighbor_pairs[:top_n * 2]
+    neighbor_indices = [idx for idx, _ in neighbor_pairs]
     neighbor_ids = [movie_ids[idx] for idx in neighbor_indices]
+
+    # Similarity scores (cosine similarity = 1 - distance)
+    neighbor_sims = {movie_ids[idx]: float(1.0 - dist) for idx, dist in neighbor_pairs}
 
     # Build results from neighbors
     rating_col, genre_col, _ = _detect_columns(merged_df)
@@ -115,10 +120,18 @@ def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str,
     # Preserve neighbor order by KNN
     order_map = {mid: i for i, mid in enumerate(neighbor_ids)}
     neighbor_movies['rank_order'] = neighbor_movies['Movie_ID'].map(order_map)
+    neighbor_movies['CF_Score'] = neighbor_movies['Movie_ID'].map(neighbor_sims)
+    # Normalize CF_Score to 0..1 across neighbors
+    try:
+        max_cf = float(neighbor_movies['CF_Score'].max())
+        if max_cf > 0:
+            neighbor_movies['CF_Score'] = neighbor_movies['CF_Score'] / max_cf
+    except Exception:
+        pass
     neighbor_movies = neighbor_movies.sort_values('rank_order').drop(columns=['rank_order'])
 
     # Return the top_n
-    cols = [c for c in ['Series_Title', genre_col, rating_col] if c in neighbor_movies.columns]
+    cols = [c for c in ['Series_Title', genre_col, rating_col, 'CF_Score'] if c in neighbor_movies.columns]
     return neighbor_movies[cols].head(top_n)
 
 

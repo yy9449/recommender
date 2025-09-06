@@ -128,11 +128,12 @@ def create_content_features(merged_df):
     
     tfidf = TfidfVectorizer(
         stop_words='english',
-        ngram_range=(1, 2),
-        min_df=2,
-        max_df=0.85,
+        ngram_range=(1, 3),
+        min_df=1,
+        max_df=0.90,
         sublinear_tf=True,
-        strip_accents='unicode'
+        strip_accents='unicode',
+        lowercase=True
     )
     return tfidf.fit_transform(merged_df['combined_features'])
 
@@ -155,11 +156,51 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         content_features = create_content_features(merged_df)
         target_features = content_features[merged_df.index.get_loc(target_idx)].reshape(1, -1)
         similarities = cosine_similarity(target_features, content_features).flatten()
-        similar_indices = np.argsort(-similarities)[1:top_n+1]
         
-        result_df = merged_df.iloc[similar_indices]
+        # Take a larger candidate pool for re-ranking
+        candidate_k = min(top_n * 5 + 1, len(similarities))
+        candidate_indices = np.argsort(-similarities)[:candidate_k]
+        candidate_indices = [idx for idx in candidate_indices if idx != merged_df.index.get_loc(target_idx)]
+        
+        # Prepare target movie attributes for boosting
         rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
         genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        director_col = 'Director_y' if 'Director_y' in merged_df.columns else 'Director'
+        target_row = merged_df.loc[target_idx]
+        target_genres = set([g.strip().lower() for g in str(target_row.get(genre_col, '')).split(',') if g])
+        target_director = str(target_row.get(director_col, '')).strip().lower()
+        # Collect all star tokens for the target
+        def gather_stars(row):
+            names = []
+            for key in ['Stars', 'Star1', 'Star2', 'Star3', 'Star4']:
+                val = row.get(key, '')
+                if pd.notna(val) and str(val).strip():
+                    names.extend([n.strip().lower() for n in str(val).split(',') if n.strip()])
+            return set(names)
+        target_stars = gather_stars(target_row)
+        
+        # Re-rank candidates with simple content-aware boosts
+        scored = []
+        for idx in candidate_indices:
+            row = merged_df.iloc[idx]
+            base_sim = float(similarities[idx])
+            # Genre overlap ratio
+            cand_genres = set([g.strip().lower() for g in str(row.get(genre_col, '')).split(',') if g])
+            genre_overlap = len(target_genres & cand_genres)
+            genre_ratio = genre_overlap / max(1, len(target_genres)) if target_genres else 0.0
+            # Director match
+            cand_director = str(row.get(director_col, '')).strip().lower()
+            director_score = 1.0 if target_director and cand_director == target_director else 0.0
+            # Star overlap ratio
+            cand_stars = gather_stars(row)
+            star_ratio = len(target_stars & cand_stars) / max(1, len(target_stars)) if target_stars else 0.0
+            # Final boosted score (heavily weight cosine, light boosts for matches)
+            final_score = 0.75 * base_sim + 0.15 * genre_ratio + 0.05 * director_score + 0.05 * star_ratio
+            scored.append((final_score, idx))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_indices = [idx for _, idx in scored[:top_n]]
+        result_df = merged_df.iloc[top_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
     
     elif genre:
