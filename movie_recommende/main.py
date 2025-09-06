@@ -31,9 +31,9 @@ def simple_content_based(merged_df, target_movie, genre_filter=None, top_n=10):
     
     # Handle genre-only filtering
     if genre_filter and not target_movie:
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x'
-        if genre_col in merged_df.columns:
-            filtered = merged_df[merged_df[merged_col].str.contains(genre_filter, case=False, na=False)]
+        # CORRECTED: Assumes 'Genre' column exists after coalesce
+        if 'Genre' in merged_df.columns:
+            filtered = merged_df[merged_df['Genre'].str.contains(genre_filter, case=False, na=False)]
             rating_col = 'IMDB_Rating' if 'IMDB_Rating' in filtered.columns else 'Rating'
             if rating_col in filtered.columns:
                 filtered = filtered.sort_values(rating_col, ascending=False)
@@ -45,8 +45,9 @@ def simple_content_based(merged_df, target_movie, genre_filter=None, top_n=10):
         return pd.DataFrame()
 
     # Create a simple "soup" from available text columns
+    # CORRECTED: Simplified list since columns are coalesced in load_data
     text_features = []
-    for col in ['Genre', 'Genre_x', 'Genre_y', 'Overview', 'Overview_x', 'Overview_y', 'Director', 'Stars']:
+    for col in ['Genre', 'Overview', 'Director', 'Stars']:
         if col in merged_df.columns:
             text_features.append(merged_df[col].fillna(''))
     
@@ -93,10 +94,20 @@ def load_data():
         )
         
         # Coalesce conflicting columns - prioritize the more detailed one (e.g., from imdb_df)
+        # This is the key part that solves the problem.
         for col in ['Genre', 'Overview', 'Director']:
-            if f'{col}_x' in merged_df.columns and f'{col}_y' in merged_df.columns:
-                merged_df[col] = merged_df[f'{col}_x'].fillna(merged_df[f'{col}_y'])
-                merged_df.drop(columns=[f'{col}_x', f'{col}_y'], inplace=True)
+            col_x, col_y = f'{col}_x', f'{col}_y'
+            if col_x in merged_df.columns and col_y in merged_df.columns:
+                # Fill missing values in the primary column (_x) with values from the secondary (_y)
+                merged_df[col] = merged_df[col_x].fillna(merged_df[col_y])
+                # Drop the now redundant _x and _y columns
+                merged_df.drop(columns=[col_x, col_y], inplace=True)
+            # Handle cases where only one of the conflicting columns might exist after a merge
+            elif col_x in merged_df.columns:
+                 merged_df.rename(columns={col_x: col}, inplace=True)
+            elif col_y in merged_df.columns:
+                 merged_df.rename(columns={col_y: col}, inplace=True)
+
 
         return merged_df, user_ratings_df
     except FileNotFoundError:
@@ -160,10 +171,11 @@ def main():
         movie_title = st.selectbox("Select a movie you like:", movie_list)
 
         # Genre selection dropdown
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x' if 'Genre_x' in merged_df.columns else 'Genre'
+        # CORRECTED: Simplified to use the single 'Genre' column
+        genre_col = 'Genre' 
         all_genres = set()
         if genre_col in merged_df.columns:
-            merged_df[genre_col].dropna().str.split(', ').sum()
+            # The original code had a slight error here, sum() is not for lists. Corrected logic:
             genres_list = [genre.strip() for sublist in merged_df[genre_col].dropna().str.split(', ').tolist() for genre in sublist]
             all_genres = sorted(list(set(genres_list)))
         
@@ -220,8 +232,9 @@ def main():
                         st.markdown(f"**{data['Series_Title']}** ({data.get('Released_Year', 'N/A')})")
                         rating_col = 'IMDB_Rating' if 'IMDB_Rating' in data else 'Rating'
                         st.markdown(f"⭐ {data.get(rating_col, 'N/A')}")
+                        # CORRECTED: Now safely gets the clean 'Genre' and 'Overview' columns
                         st.expander("Details").write(f"""
-                        - **Genre:** {data.get(genre_col, 'N/A')}
+                        - **Genre:** {data.get('Genre', 'N/A')}
                         - **Director:** {data.get('Director', 'N/A')}
                         - **Overview:** {data.get('Overview', 'N/A')}
                         """)
@@ -233,7 +246,8 @@ def main():
                     # Show genre matching in results
                     genre_matches = 0
                     for _, row in results.iterrows():
-                        if genre_input.lower() in str(row[genre_col]).lower():
+                        # CORRECTED: Uses the clean 'Genre' column directly
+                        if genre_input.lower() in str(row.get('Genre', '')).lower():
                             genre_matches += 1
                     
                     match_percentage = (genre_matches / len(results)) * 100
