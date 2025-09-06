@@ -55,10 +55,20 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
 @st.cache_data
 def create_content_features(merged_df):
-    """Create TF-IDF features from tag tokens (genres, director, stars, certificate, time buckets)."""
+    """Create TF-IDF features from core tags: normalized genres, director, and title root."""
     
     def normalize_name(text: str) -> str:
         return re.sub(r"\s+", "_", str(text).strip().lower())
+
+    def normalize_title_root(title: str) -> str:
+        t = str(title).lower().strip()
+        # Remove common sequel indicators and digits
+        t = re.sub(r"\b(part|chapter|episode|vol|volume)\b\s*[ivx0-9]*", "", t)
+        t = re.sub(r"[\-_:]", " ", t)
+        t = re.sub(r"\b(i{1,3}|iv|v|vi{0,3}|vii{0,2}|ix|x)\b", "", t)  # roman numerals
+        t = re.sub(r"\d+", "", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
 
     def build_tokens(row) -> str:
         tokens = []
@@ -70,46 +80,12 @@ def create_content_features(merged_df):
         director_val = row.get('Director_y', row.get('Director_x', row.get('Director', '')))
         if pd.notna(director_val) and str(director_val).strip():
             tokens.append(f"dir_{normalize_name(director_val)}")
-        # Stars (collect unique)
-        star_fields = ['Stars', 'Star1', 'Star2', 'Star3', 'Star4']
-        star_set = set()
-        for key in star_fields:
-            val = row.get(key, '')
-            if pd.notna(val) and str(val).strip():
-                parts = [p.strip() for p in str(val).split(',') if p.strip()]
-                for p in parts:
-                    star_set.add(normalize_name(p))
-        for s in list(star_set)[:6]:
-            tokens.append(f"star_{s}")
-        # Certificate
-        cert = row.get('Certificate', '')
-        if pd.notna(cert) and str(cert).strip():
-            tokens.append(f"cert_{normalize_name(cert)}")
-        # Decade
-        y = row.get('Released_Year', row.get('Year', None))
-        try:
-            y = int(y) if pd.notna(y) else None
-            if y and y > 1900:
-                tokens.append(f"decade_{(y // 10) * 10}s")
-        except Exception:
-            pass
-        # Runtime bucket
-        runtime = row.get('Runtime', None)
-        try:
-            if isinstance(runtime, str):
-                m = re.search(r'(\d+)', runtime)
-                runtime_val = int(m.group(1)) if m else None
-            else:
-                runtime_val = int(runtime) if pd.notna(runtime) else None
-            if runtime_val:
-                if runtime_val < 90:
-                    tokens.append('runtime_<90')
-                elif runtime_val <= 120:
-                    tokens.append('runtime_90_120')
-                else:
-                    tokens.append('runtime_>120')
-        except Exception:
-            pass
+        # Title root (captures sequels like "deadpool 2")
+        title = row.get('Series_Title', '')
+        if pd.notna(title) and str(title).strip():
+            root = normalize_title_root(title)
+            if root:
+                tokens.append(f"title_root_{normalize_name(root)}")
         return ' '.join(tokens)
 
     # Create a new column with combined features
@@ -117,7 +93,7 @@ def create_content_features(merged_df):
     
     tfidf = TfidfVectorizer(
         stop_words=None,
-        ngram_range=(1, 1),
+        ngram_range=(1, 2),
         min_df=1,
         max_df=0.90,
         sublinear_tf=True,
@@ -206,29 +182,37 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
             
         target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
         
-        # BASIC: genre Jaccard (primary) + cosine over binary genre vectors (extra)
-        bin_mat, tokens_per_row, genre_col, _ = create_genre_binary_features(merged_df)
+        # TF-IDF on core tags (genres + director + title root) and cosine similarity
+        tag_features = create_content_features(merged_df)
         target_loc = merged_df.index.get_loc(target_idx)
-        # Cosine over binary vectors
-        sims = cosine_similarity([bin_mat[target_loc]], bin_mat).flatten()
-        # Jaccard overlap
-        target_set = set(tokens_per_row[target_loc])
+        sims = cosine_similarity([tag_features[target_loc]], tag_features).flatten()
+        # Boost by normalized genre Jaccard
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        all_genres_norm = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
+        target_set = set(all_genres_norm.iloc[target_loc])
+        candidate_k = min(top_n * 10 + 1, len(sims))
+        ranked = np.argsort(-sims)[:candidate_k]
         scored = []
-        for idx in range(len(tokens_per_row)):
+        for idx in ranked:
             if idx == target_loc:
                 continue
-            cand_set = set(tokens_per_row[idx])
+            cand_set = set(all_genres_norm.iloc[idx])
             if not target_set or not cand_set:
                 jacc = 0.0
             else:
                 inter = len(target_set & cand_set)
                 union = len(target_set | cand_set)
                 jacc = inter / union if union > 0 else 0.0
-            # require at least 1 shared genre
             if jacc <= 0:
                 continue
-            # combine: major genre (basic), extra cosine
-            final_score = 0.75 * jacc + 0.25 * float(sims[idx])
+            # rating prior
+            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+            rating_val = merged_df.iloc[idx].get(rating_col, 7.0)
+            try:
+                rating_norm = float(rating_val) / 10.0 if pd.notna(rating_val) else 0.7
+            except Exception:
+                rating_norm = 0.7
+            final_score = 0.70 * float(sims[idx]) + 0.25 * jacc + 0.05 * rating_norm
             scored.append((final_score, idx))
         scored.sort(key=lambda x: x[0], reverse=True)
         top_indices = [idx for _, idx in scored[:top_n]]
