@@ -42,10 +42,6 @@ def find_director_column(df: pd.DataFrame) -> str:
     return 'Director'
 
 
-def find_votes_column(df: pd.DataFrame) -> str:
-    return 'No_of_Votes' if 'No_of_Votes' in df.columns else 'Votes'
-
-
 def find_similar_titles(input_title, titles_list, cutoff=0.6):
     """Enhanced fuzzy matching for movie titles"""
     if not input_title or not titles_list:
@@ -74,26 +70,6 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
     # Close matches
     return get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
-
-
-def _compute_quality_vector(merged_df: pd.DataFrame) -> np.ndarray:
-    """Normalized quality signal from rating and votes, in [0,1] per item order."""
-    rating_col = find_rating_column(merged_df)
-    votes_col = find_votes_column(merged_df)
-    qualities: list[float] = []
-    for _, row in merged_df.iterrows():
-        rating_val = safe_convert_to_numeric(row.get(rating_col, np.nan), default=np.nan)
-        if pd.isna(rating_val):
-            rating_val = 7.0
-        votes_val = row.get(votes_col, 1000)
-        try:
-            votes_val = float(str(votes_val).replace(',', ''))
-        except Exception:
-            votes_val = 1000.0
-        # Popularity-style normalization: rating * log10(votes+1) scaled to ~[0,1]
-        popularity = (rating_val * np.log10(votes_val + 1.0)) / 10.0
-        qualities.append(float(np.clip(popularity, 0.0, 1.0)))
-    return np.array(qualities)
 
 
 @st.cache_data
@@ -140,7 +116,7 @@ def create_content_features(merged_df):
 
 @st.cache_data
 def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=8):
-    """Content-Based filtering using title/genre/rating tokens + cosine, blended with quality (rating & votes)."""
+    """Content-Based filtering using title, genre, director and rating tokens (cosine similarity)"""
     if target_movie:
         similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
         if not similar_titles:
@@ -157,19 +133,9 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         content_features = create_content_features(merged_df)
         target_features = content_features[merged_df.index.get_loc(target_idx)].reshape(1, -1)
         similarities = cosine_similarity(target_features, content_features).flatten()
+        similar_indices = np.argsort(-similarities)[1:top_n+1]
         
-        # Blend cosine with normalized quality
-        quality_vec = _compute_quality_vector(merged_df)
-        sim_min, sim_max = float(similarities.min()), float(similarities.max())
-        norm_sim = (similarities - sim_min) / (sim_max - sim_min + 1e-9)
-        final_scores = 0.85 * norm_sim + 0.15 * quality_vec
-        
-        # Exclude the target itself and rank
-        target_pos = merged_df.index.get_loc(target_idx)
-        final_scores[target_pos] = -1.0
-        ranked_indices = np.argsort(-final_scores)[:top_n]
-        
-        result_df = merged_df.iloc[ranked_indices]
+        result_df = merged_df.iloc[similar_indices]
         rating_col = find_rating_column(merged_df)
         genre_col = find_genre_column(merged_df)
         return result_df[['Series_Title', genre_col, rating_col]]
@@ -184,15 +150,9 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         tfidf_matrix = tfidf.fit_transform(genre_corpus)
         query_vector = tfidf.transform([genre])
         similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
+        similar_indices = np.argsort(-similarities)[1:top_n+1]
         
-        # Blend cosine with normalized quality
-        quality_vec = _compute_quality_vector(merged_df)
-        sim_min, sim_max = float(similarities.min()), float(similarities.max())
-        norm_sim = (similarities - sim_min) / (sim_max - sim_min + 1e-9)
-        final_scores = 0.85 * norm_sim + 0.15 * quality_vec
-        
-        ranked_indices = np.argsort(-final_scores)[:top_n]
-        result_df = merged_df.iloc[ranked_indices]
+        result_df = merged_df.iloc[similar_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
         
     return None

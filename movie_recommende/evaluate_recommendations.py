@@ -79,7 +79,7 @@ def build_item_similarity_knn(user_ratings, merged, k=K_NEIGHBORS):
 	return knn, user_item
 
 
-def compute_popularity_and_recency(merged):
+def compute_popularity_and_recency(merged, ratings_df=None):
 	_, rating_col, year_col, votes_col = get_cols(merged)
 	pop = {}
 	rec = {}
@@ -104,6 +104,15 @@ def compute_popularity_and_recency(merged):
 		year_diff = max(0, current_year - year_val)
 		recency = np.exp(-year_diff / 20.0)
 		rec[title] = float(np.clip(recency, 0.0, 1.0))
+	# Interaction-based popularity boost if ratings provided
+	if ratings_df is not None and not ratings_df.empty and 'Movie_ID' in merged.columns:
+		counts = ratings_df['Movie_ID'].value_counts()
+		for movie_id, cnt in counts.items():
+			match = merged[merged['Movie_ID'] == movie_id]
+			if not match.empty:
+				t = match.iloc[0]['Series_Title']
+				boost = min(cnt / 100.0, 1.0)
+				pop[t] = 0.6 * pop.get(t, 0.5) + 0.4 * boost
 	return pop, rec
 
 # =============================================================
@@ -170,7 +179,7 @@ def evaluate_models():
 	content_matrix = build_content_matrix(merged)
 	sim_matrix, title_to_idx = predict_content_scores(merged, content_matrix)
 	knn, user_item = build_item_similarity_knn(ratings, merged)
-	popularity, recency = compute_popularity_and_recency(merged)
+	popularity, recency = compute_popularity_and_recency(merged, ratings)
 
 	# Split
 	train_df, test_df = split_per_user(ratings)
@@ -323,9 +332,9 @@ def evaluate_models():
 			'Recall': round(results[name]['recall'], 2),
 			'RMSE': round(results[name]['rmse'], 2),
 			'Notes': (
-				'Worked well with dense ratings' if name == 'Collaborative' else
-				'Good with rich metadata' if name == 'Content-Based' else
-				'Best balance between both'
+				'Item-KNN on user ratings' if name == 'Collaborative' else
+				'TF-IDF on title/genre + rating token' if name == 'Content-Based' else
+				'Linear blend: 0.4C + 0.3CF + 0.2Pop + 0.1Rec'
 			)
 		}
 		summary_rows.append(row)
