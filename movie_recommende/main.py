@@ -403,7 +403,7 @@ def main():
             
             if algorithm == "Content-Based":
                 # Updated function call to match actual function signature
-                results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
+                results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             elif algorithm == "Collaborative Filtering":
                 if movie_title and user_ratings_df is not None:
                     results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
@@ -412,11 +412,11 @@ def main():
                     return
             else:  # Hybrid
                 if user_ratings_df is not None:
-                    results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, top_n)
+                    results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, genre_input, top_n)
                 else:
                     # Fallback to content-based if no user data
                     st.info("ℹ️ No user data available, falling back to content-based recommendations.")
-                    results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
+                    results = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n)
             
             # Display results
             if results is not None and not results.empty:
