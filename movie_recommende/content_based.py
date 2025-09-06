@@ -55,44 +55,46 @@ def find_similar_titles(input_title, titles_list, cutoff=0.6):
 
 @st.cache_data
 def create_content_features(merged_df):
-    """Create weighted TF-IDF features from multiple text fields"""
+    """Create TF-IDF features from tag tokens (genres, director, stars, certificate, time buckets)."""
     
-    # Clean and combine features with weights
-    def combine_features(row):
-        # Intelligently select the best available column after the merge
-        overview = str(row.get('Overview_y', row.get('Overview_x', '')))
-        genre = str(row.get('Genre_y', row.get('Genre_x', '')))
-        director = str(row.get('Director_y', row.get('Director_x', '')))
-        certificate = str(row.get('Certificate', ''))
-        year = row.get('Released_Year', row.get('Year', None))
-        runtime = row.get('Runtime', None)
-        
-        # Combine all available star information
-        stars = str(row.get('Stars', '')) # from movies.csv
-        star1 = str(row.get('Star1', '')) # from imdb_top_1000.csv
-        star2 = str(row.get('Star2', ''))
-        star3 = str(row.get('Star3', ''))
-        star4 = str(row.get('Star4', ''))
-        all_stars = ' '.join(filter(None, [stars, star1, star2, star3, star4]))
-        
-        # Ensure values are not NaN before joining
-        overview = overview if pd.notna(overview) else ''
-        genre = genre if pd.notna(genre) else ''
-        director = director if pd.notna(director) else ''
-        certificate = certificate if pd.notna(certificate) else ''
+    def normalize_name(text: str) -> str:
+        return re.sub(r"\s+", "_", str(text).strip().lower())
 
-        # Derive decade token
-        decade_token = ''
+    def build_tokens(row) -> str:
+        tokens = []
+        # Genres
+        genre_val = row.get('Genre_y', row.get('Genre_x', row.get('Genre', '')))
+        for g in normalize_genre_tokens(genre_val):
+            tokens.append(f"genre_{g.replace(' ', '_')}")
+        # Director
+        director_val = row.get('Director_y', row.get('Director_x', row.get('Director', '')))
+        if pd.notna(director_val) and str(director_val).strip():
+            tokens.append(f"dir_{normalize_name(director_val)}")
+        # Stars (collect unique)
+        star_fields = ['Stars', 'Star1', 'Star2', 'Star3', 'Star4']
+        star_set = set()
+        for key in star_fields:
+            val = row.get(key, '')
+            if pd.notna(val) and str(val).strip():
+                parts = [p.strip() for p in str(val).split(',') if p.strip()]
+                for p in parts:
+                    star_set.add(normalize_name(p))
+        for s in list(star_set)[:6]:
+            tokens.append(f"star_{s}")
+        # Certificate
+        cert = row.get('Certificate', '')
+        if pd.notna(cert) and str(cert).strip():
+            tokens.append(f"cert_{normalize_name(cert)}")
+        # Decade
+        y = row.get('Released_Year', row.get('Year', None))
         try:
-            y = int(year) if pd.notna(year) else None
+            y = int(y) if pd.notna(y) else None
             if y and y > 1900:
-                decade = (y // 10) * 10
-                decade_token = f"decade_{decade}s"
+                tokens.append(f"decade_{(y // 10) * 10}s")
         except Exception:
-            decade_token = ''
-
-        # Derive runtime bucket token (if runtime provided as "123 min" or number)
-        runtime_token = ''
+            pass
+        # Runtime bucket
+        runtime = row.get('Runtime', None)
         try:
             if isinstance(runtime, str):
                 m = re.search(r'(\d+)', runtime)
@@ -101,38 +103,25 @@ def create_content_features(merged_df):
                 runtime_val = int(runtime) if pd.notna(runtime) else None
             if runtime_val:
                 if runtime_val < 90:
-                    runtime_token = 'runtime_<90'
+                    tokens.append('runtime_<90')
                 elif runtime_val <= 120:
-                    runtime_token = 'runtime_90_120'
+                    tokens.append('runtime_90_120')
                 else:
-                    runtime_token = 'runtime_>120'
+                    tokens.append('runtime_>120')
         except Exception:
-            runtime_token = ''
-
-        # Apply weights
-        tokens = []
-        tokens.extend([overview] * 3)
-        tokens.extend([genre] * 3)
-        tokens.extend([director] * 2)
-        tokens.extend([all_stars] * 2)
-        if certificate:
-            tokens.extend([f"cert_{certificate}"])
-        if decade_token:
-            tokens.append(decade_token)
-        if runtime_token:
-            tokens.append(runtime_token)
+            pass
         return ' '.join(tokens)
 
     # Create a new column with combined features
-    merged_df['combined_features'] = merged_df.apply(combine_features, axis=1)
+    merged_df['combined_features'] = merged_df.apply(build_tokens, axis=1)
     
     tfidf = TfidfVectorizer(
-        stop_words='english',
-        ngram_range=(1, 2),
-        min_df=2,
-        max_df=0.80,
+        stop_words=None,
+        ngram_range=(1, 1),
+        min_df=1,
+        max_df=0.90,
         sublinear_tf=True,
-        strip_accents='unicode',
+        strip_accents=None,
         lowercase=True
     )
     return tfidf.fit_transform(merged_df['combined_features'])
@@ -188,17 +177,27 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
             
         target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
         
-        # Genre-only similarity with normalized tokens and overlap filter
-        genre_features, vectorizer, genre_col = create_genre_features(merged_df)
+        # Tag-token similarity with re-ranking by genre overlap
+        content_features = create_content_features(merged_df)
         target_loc = merged_df.index.get_loc(target_idx)
-        target_vec = genre_features[target_loc].reshape(1, -1)
-        sims = cosine_similarity(target_vec, genre_features).flatten()
-        # Require at least one normalized genre in common
-        all_tokens = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
-        target_tokens = set(all_tokens.iloc[target_loc])
-        ranked = np.argsort(-sims)
-        filtered = [idx for idx in ranked if idx != target_loc and len(target_tokens & set(all_tokens.iloc[idx])) > 0]
-        top_indices = filtered[:top_n]
+        target_vec = content_features[target_loc].reshape(1, -1)
+        sims = cosine_similarity(target_vec, content_features).flatten()
+        candidate_k = min(top_n * 5 + 1, len(sims))
+        ranked = np.argsort(-sims)[:candidate_k]
+        ranked = [idx for idx in ranked if idx != target_loc]
+        # Prepare overlap information
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        all_genres_norm = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
+        target_genres = set(all_genres_norm.iloc[target_loc])
+        scored = []
+        for idx in ranked:
+            base = float(sims[idx])
+            cand_genres = set(all_genres_norm.iloc[idx])
+            genre_ratio = len(target_genres & cand_genres) / max(1, len(target_genres)) if target_genres else 0.0
+            final_score = 0.80 * base + 0.20 * genre_ratio
+            scored.append((final_score, idx))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_indices = [idx for _, idx in scored[:top_n]]
         rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
         result_df = merged_df.iloc[top_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
