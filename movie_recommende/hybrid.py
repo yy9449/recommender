@@ -1,156 +1,157 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-from content_based import content_based_filtering_enhanced, create_content_features, find_rating_column, find_genre_column
-from collaborative import collaborative_knn, load_user_ratings
-import warnings
-warnings.filterwarnings('ignore')
+
+from typing import Optional
+
+from content_based import content_based_filtering_enhanced
+from collaborative import collaborative_filtering_enhanced, load_user_ratings
 
 
-class LinearHybridRecommender:
-    def __init__(self, merged_df):
-        self.merged_df = merged_df
-        self.rating_col = find_rating_column(merged_df)
-        self.genre_col = find_genre_column(merged_df)
-        self.user_ratings_df = load_user_ratings()
-        # Weights
-        self.alpha = 0.4  # Content
-        self.beta = 0.3   # Collaborative
-        self.gamma = 0.2  # Popularity
-        self.delta = 0.1  # Recency
-
-    def _content_scores(self, target_movie, genre, top_n):
-        scores = {}
-        if target_movie:
-            # Compute cosine similarity against the content feature space
-            content_features = create_content_features(self.merged_df)
-            # Locate target movie index (case-insensitive fallback)
-            if target_movie in self.merged_df['Series_Title'].values:
-                target_idx = self.merged_df[self.merged_df['Series_Title'] == target_movie].index[0]
-            else:
-                match_series = self.merged_df[self.merged_df['Series_Title'].str.lower() == str(target_movie).lower()]
-                if match_series.empty:
-                    return scores
-                target_idx = match_series.index[0]
-            target_loc = self.merged_df.index.get_loc(target_idx)
-            target_vec = content_features[target_loc].reshape(1, -1)
-            sims = cosine_similarity(target_vec, content_features).flatten()
-            order = list(np.argsort(-sims))
-            order = [i for i in order if i != target_loc][: top_n * 3]
-            for i in order:
-                title = self.merged_df.iloc[i]['Series_Title']
-                scores[title] = float(sims[i])
-            return scores
-        if genre:
-            # Build genre-only TF-IDF and compute cosine similarity to genre query
-            genre_col = self.genre_col
-            genre_corpus = self.merged_df[genre_col].fillna('').tolist()
-            tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
-            tfidf_matrix = tfidf.fit_transform(genre_corpus)
-            query_vector = tfidf.transform([genre])
-            sims = cosine_similarity(query_vector, tfidf_matrix).flatten()
-            order = np.argsort(-sims)[: top_n * 3]
-            for i in order:
-                title = self.merged_df.iloc[i]['Series_Title']
-                scores[title] = float(sims[i])
-            return scores
-        return scores
-
-    def _collab_scores(self, target_movie, top_n):
-        scores = {}
-        if target_movie and self.user_ratings_df is not None:
-            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
-            if results is not None and not results.empty:
-                if 'Similarity' in results.columns:
-                    for _, row in results.iterrows():
-                        scores[row['Series_Title']] = float(row['Similarity'])
-                else:
-                    # Fallback: presence implies some relevance
-                    for _, row in results.iterrows():
-                        scores[row['Series_Title']] = 1.0
-        return scores
-
-    def _popularity_scores(self):
-        pop = {}
-        votes_col = 'No_of_Votes' if 'No_of_Votes' in self.merged_df.columns else 'Votes'
-        for _, movie in self.merged_df.iterrows():
-            title = movie['Series_Title']
-            rating = movie.get(self.rating_col, 7.0)
-            votes = movie.get(votes_col, 1000)
-            try:
-                votes_val = float(str(votes).replace(',', ''))
-            except Exception:
-                votes_val = 1000.0
-            if pd.isna(rating):
-                rating = 7.0
-            popularity = (float(rating) * np.log10(votes_val + 1.0)) / 10.0
-            pop[title] = float(np.clip(popularity, 0.0, 1.0))
-        # Optional: light boost based on user interactions if available
-        if self.user_ratings_df is not None and 'Movie_ID' in self.merged_df.columns:
-            interaction_counts = self.user_ratings_df['Movie_ID'].value_counts()
-            for mid, cnt in interaction_counts.items():
-                match = self.merged_df[self.merged_df['Movie_ID'] == mid]
-                if not match.empty:
-                    t = match.iloc[0]['Series_Title']
-                    boost = min(cnt / 100.0, 1.0)
-                    pop[t] = 0.6 * pop.get(t, 0.5) + 0.4 * boost
-        return pop
-
-    def _recency_scores(self):
-        rec = {}
-        year_col = 'Released_Year' if 'Released_Year' in self.merged_df.columns else 'Year'
-        current_year = pd.Timestamp.now().year
-        for _, movie in self.merged_df.iterrows():
-            title = movie['Series_Title']
-            year = movie.get(year_col, 2000)
-            try:
-                year_val = int(str(year).split()[0]) if not pd.isna(year) else 2000
-            except Exception:
-                year_val = 2000
-            diff = max(0, current_year - year_val)
-            recency = np.exp(-diff / 20.0)
-            rec[title] = float(np.clip(recency, 0.0, 1.0))
-        return rec
-
-    def recommend(self, target_movie=None, genre=None, top_n=8):
-        # Gather component scores
-        content_scores = self._content_scores(target_movie, genre, top_n)
-        collab_scores = self._collab_scores(target_movie, top_n)
-        popularity_scores = self._popularity_scores()
-        recency_scores = self._recency_scores()
-
-        # Candidate set
-        candidates = set(content_scores.keys()) | set(collab_scores.keys())
-        if len(candidates) < top_n * 2:
-            # Add top popular titles
-            for t, _ in sorted(popularity_scores.items(), key=lambda x: x[1], reverse=True)[:top_n * 2]:
-                candidates.add(t)
-
-        final_scores = {}
-        for title in candidates:
-            c = content_scores.get(title, 0.0)
-            cf = collab_scores.get(title, 0.0)
-            pop = popularity_scores.get(title, 0.5)
-            rec = recency_scores.get(title, 0.5)
-            score = self.alpha * c + self.beta * cf + self.gamma * pop + self.delta * rec
-            final_scores[title] = float(score)
-
-        top_items = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-        top_titles = [t for t, _ in top_items]
-        result_df = self.merged_df[self.merged_df['Series_Title'].isin(top_titles)]
-        if result_df.empty:
-            return None
-        # Preserve order
-        order = {t: i for i, t in enumerate(top_titles)}
-        result_df = result_df.copy()
-        result_df['rank_order'] = result_df['Series_Title'].map(order)
-        result_df = result_df.sort_values('rank_order').drop(columns=['rank_order'])
-        return result_df[['Series_Title', self.genre_col, self.rating_col]]
+ALPHA = 0.4  # Content-based weight
+BETA = 0.4   # Collaborative weight
+GAMMA = 0.1  # Popularity weight
+DELTA = 0.1  # Recency weight
 
 
-@st.cache_data
-def smart_hybrid_recommendation(merged_df, target_movie=None, genre=None, top_n=8):
-    recommender = LinearHybridRecommender(merged_df)
-    return recommender.recommend(target_movie, genre, top_n)
+def _resolve_columns(merged_df: pd.DataFrame) -> tuple[str, str, str, str]:
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+    votes_col = 'No_of_Votes' if 'No_of_Votes' in merged_df.columns else None
+    year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else ('Year' if 'Year' in merged_df.columns else None)
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+    return rating_col, votes_col, year_col, genre_col
+
+
+def _compute_popularity(merged_df: pd.DataFrame, rating_col: str, votes_col: Optional[str]) -> pd.Series:
+    # Popularity: IMDB_Rating × log(votes)
+    ratings = merged_df[rating_col].astype(float).fillna(merged_df[rating_col].astype(float).mean())
+    if votes_col is None or votes_col not in merged_df.columns:
+        # If votes missing, fallback to just normalized rating
+        popularity = ratings
+    else:
+        # Clean numeric votes (remove commas)
+        votes_str = merged_df[votes_col].fillna('0').astype(str).str.replace(',', '', regex=False)
+        votes = pd.to_numeric(votes_str, errors='coerce').fillna(0.0)
+        popularity = ratings * np.log1p(votes)
+    # Normalize 0..1
+    pop_min, pop_max = popularity.min(), popularity.max()
+    if pop_max > pop_min:
+        popularity = (popularity - pop_min) / (pop_max - pop_min)
+    else:
+        popularity = popularity * 0.0
+    return popularity
+
+
+def _compute_recency(merged_df: pd.DataFrame, year_col: Optional[str]) -> pd.Series:
+    # Recency: exponential decay based on year
+    if year_col is None or year_col not in merged_df.columns:
+        return pd.Series(np.zeros(len(merged_df)), index=merged_df.index)
+    years = pd.to_numeric(merged_df[year_col], errors='coerce').fillna(merged_df[year_col].mode().iloc[0] if merged_df[year_col].mode().size > 0 else 2000)
+    current_year = pd.Timestamp.today().year
+    # Half-life like decay: newer => closer to 1
+    decay_rate = 0.05  # tunable
+    recency = np.exp(-decay_rate * (current_year - years))
+    # Normalize 0..1
+    rmin, rmax = recency.min(), recency.max()
+    if rmax > rmin:
+        recency = (recency - rmin) / (rmax - rmin)
+    else:
+        recency = recency * 0.0
+    return pd.Series(recency, index=merged_df.index)
+
+
+def smart_hybrid_recommendation(
+    merged_df: pd.DataFrame,
+    movie_title: Optional[str],
+    genre_input: Optional[str],
+    top_n: int = 10
+) -> pd.DataFrame:
+    """
+    Hybrid recommendations blending Content, Collaborative, Popularity, and Recency.
+    FinalScore = 0.4*Content + 0.4*Collaborative + 0.1*Popularity + 0.1*Recency
+    """
+    if merged_df is None or merged_df.empty:
+        return pd.DataFrame()
+
+    rating_col, votes_col, year_col, genre_col = _resolve_columns(merged_df)
+
+    # Content-based component
+    cb_df = content_based_filtering_enhanced(merged_df, movie_title, genre_input, top_n=max(top_n * 3, 25))
+    if cb_df is None or cb_df.empty:
+        # If content fails, degrade to popularity/recency
+        cb_df = merged_df[['Series_Title']].copy()
+        cb_df['ContentScore'] = 0.0
+        if rating_col in merged_df.columns:
+            cb_df[rating_col] = merged_df[rating_col]
+        if genre_col in merged_df.columns:
+            cb_df[genre_col] = merged_df[genre_col]
+
+    # Collaborative component
+    cf_df = collaborative_filtering_enhanced(merged_df, movie_title, top_n=max(top_n * 3, 25)) if movie_title else pd.DataFrame()
+
+    # Popularity and Recency
+    popularity = _compute_popularity(merged_df, rating_col, votes_col)
+    recency = _compute_recency(merged_df, year_col)
+
+    base = merged_df[['Series_Title']].copy()
+    base['Popularity'] = popularity.values
+    base['Recency'] = recency.values
+
+    # Merge components
+    combined = base.merge(cb_df[['Series_Title', 'ContentScore']], on='Series_Title', how='left')
+    if not cf_df.empty:
+        combined = combined.merge(cf_df[['Series_Title', 'CFScore']], on='Series_Title', how='left')
+    else:
+        combined['CFScore'] = 0.0
+
+    # Fill NaNs
+    combined['ContentScore'] = combined['ContentScore'].fillna(0.0)
+    combined['CFScore'] = combined['CFScore'].fillna(0.0)
+
+    # Normalize content and collaborative to 0..1 for blending fairness
+    for col in ['ContentScore', 'CFScore']:
+        cmin, cmax = combined[col].min(), combined[col].max()
+        if cmax > cmin:
+            combined[col] = (combined[col] - cmin) / (cmax - cmin)
+        else:
+            combined[col] = 0.0
+
+    # Final score
+    combined['FinalScore'] = (
+        ALPHA * combined['ContentScore'] +
+        BETA * combined['CFScore'] +
+        GAMMA * combined['Popularity'] +
+        DELTA * combined['Recency']
+    )
+
+    # Optional genre filtering
+    if genre_input:
+        try:
+            mask = merged_df.set_index('Series_Title')[genre_col].astype(str).str.lower().str.contains(genre_input.strip().lower())
+            mask = mask.reindex(combined['Series_Title']).fillna(False)
+            if mask.any():
+                combined = combined[mask.values]
+        except Exception:
+            pass
+
+    # Exclude the exact query movie from the top list
+    if movie_title:
+        combined = combined[combined['Series_Title'].str.lower() != movie_title.lower()]
+
+    # Attach metadata for UI
+    meta_cols = {}
+    if rating_col in merged_df.columns:
+        meta_cols['IMDB_Rating'] = merged_df.set_index('Series_Title')[rating_col]
+    if genre_col in merged_df.columns:
+        meta_cols['Genre'] = merged_df.set_index('Series_Title')[genre_col]
+
+    for new_col, series in meta_cols.items():
+        combined[new_col] = combined['Series_Title'].map(series)
+
+    combined = combined.sort_values('FinalScore', ascending=False).head(top_n)
+
+    # Reorder for UI
+    keep_cols = ['Series_Title', 'IMDB_Rating', 'Genre', 'FinalScore']
+    keep_cols = [c for c in keep_cols if c in combined.columns]
+
+    return combined[keep_cols].reset_index(drop=True)
