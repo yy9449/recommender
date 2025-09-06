@@ -132,12 +132,18 @@ def normalize_genre_tokens(text):
     norm = []
     for g in raw:
         s = g.replace('-', ' ').replace('_', ' ').strip()
-        if s in ("sci fi", "science fiction", "scifi"):
+        if s in ("sci fi", "science fiction", "scifi", "sci-fi"):
             s = "sci fi"
         if s in ("film noir",):
             s = "noir"
         if s in ("musical",):
             s = "music"
+        if s in ("romcom", "rom com", "rom-com"):
+            s = "rom com"
+        if s in ("super hero", "super-hero", "superhero"):
+            s = "superhero"
+        if s in ("biopic",):
+            s = "biography"
         norm.append(s)
     return norm
 
@@ -151,12 +157,12 @@ def create_genre_features(merged_df):
         token_pattern=None,
         lowercase=True,
         stop_words=None,
-        ngram_range=(1, 1),
+        ngram_range=(1, 2),
         use_idf=True,
         sublinear_tf=True,
         norm='l2',
         min_df=1,
-        max_df=1.0
+        max_df=0.75
     )
     tfidf_matrix = vectorizer.fit_transform(merged_df[genre_col].fillna(''))
     return tfidf_matrix, vectorizer, genre_col
@@ -193,8 +199,22 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         for idx in ranked:
             base = float(sims[idx])
             cand_genres = set(all_genres_norm.iloc[idx])
-            genre_ratio = len(target_genres & cand_genres) / max(1, len(target_genres)) if target_genres else 0.0
-            final_score = 0.80 * base + 0.20 * genre_ratio
+            # Jaccard similarity for genre overlap
+            if target_genres or cand_genres:
+                inter = len(target_genres & cand_genres)
+                union = len(target_genres | cand_genres) if target_genres | cand_genres else 1
+                genre_overlap = inter / union
+            else:
+                genre_overlap = 0.0
+            # small rating prior
+            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+            rating_val = merged_df.iloc[idx].get(rating_col, 7.0)
+            try:
+                rating_norm = float(rating_val) / 10.0 if pd.notna(rating_val) else 0.7
+            except Exception:
+                rating_norm = 0.7
+            # final score with stronger genre influence
+            final_score = 0.65 * base + 0.30 * genre_overlap + 0.05 * rating_norm
             scored.append((final_score, idx))
         scored.sort(key=lambda x: x[0], reverse=True)
         top_indices = [idx for _, idx in scored[:top_n]]
