@@ -401,7 +401,16 @@ def main():
         with st.spinner("🎬 Generating personalized recommendations..."):
             results = None
             
+            # Clear cache before generating recommendations to avoid cached errors
+            if hasattr(st.cache_data, 'clear'):
+                content_based_filtering_enhanced.clear()
+                if 'smart_hybrid_recommendation' in globals():
+                    smart_hybrid_recommendation.clear()
+            
             try:
+                # Debug: Show available columns
+                st.write("Debug - Available columns:", list(merged_df.columns))
+                
                 if algorithm == "Content-Based":
                     # Check if the function supports genre_filter parameter
                     import inspect
