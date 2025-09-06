@@ -91,10 +91,6 @@ def content_based_filtering_enhanced(
 ) -> pd.DataFrame:
     """
     Content-based recommender using TF-IDF features with weights and cosine similarity.
-
-    - Features: Series_Title (w=0.5), Genre (w=8.0), IMDB_Rating (w=1.5)
-    - Similarity: cosine between weighted feature vectors
-    - If both movie_title and genre_input provided, filter results by genre where possible
     """
     if merged_df is None or merged_df.empty:
         return pd.DataFrame()
@@ -103,9 +99,10 @@ def content_based_filtering_enhanced(
 
     idx = None
     if movie_title:
-        matches = merged_df.index[merged_df['Series_Title'].str.lower() == movie_title.lower()].tolist()
-        if matches:
-            idx = matches[0]
+        # Find positional index instead of label-based index to align with numpy arrays
+        pos = np.where(merged_df['Series_Title'].str.lower().values == movie_title.lower())[0]
+        if pos.size > 0:
+            idx = int(pos[0])
 
     if idx is not None:
         sims = cosine_similarity(combined[idx].reshape(1, -1), combined).ravel()
@@ -117,8 +114,8 @@ def content_based_filtering_enhanced(
     merged_df = merged_df.copy()
     merged_df['ContentScore'] = sims
 
-    if idx is not None:
-        merged_df.loc[idx, 'ContentScore'] = -np.inf
+    if idx is not None and 0 <= idx < len(merged_df):
+        merged_df.loc[merged_df.index[idx], 'ContentScore'] = -np.inf
 
     results = merged_df
     if genre_input:
