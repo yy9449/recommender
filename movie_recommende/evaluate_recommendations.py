@@ -203,7 +203,78 @@ def evaluate_models():
 		else:
 			user_content_pref[user_id] = np.zeros(sim_matrix.shape[0])
 
-	# Predictions and ground truth
+	# Calibrate classification thresholds on training set to avoid skew
+	pos_rate = (train_df['Rating'] >= RATING_THRESHOLD).mean()
+	# Guard rails
+	if pos_rate <= 0.0:
+		pos_rate = 0.5
+	if pos_rate >= 1.0:
+		pos_rate = 0.5
+
+	# Compute train-time predicted scores for calibration
+	content_train_preds = []
+	hybrid_train_preds = []
+	for _, row in train_df.iterrows():
+		user = row['User_ID']
+		movie_id = int(row['Movie_ID'])
+		title = merged.loc[merged['Movie_ID'] == movie_id, 'Series_Title']
+		if title.empty or title.iloc[0] not in title_to_idx:
+			continue
+		idx = title_to_idx[title.iloc[0]]
+		content_score = float(user_content_pref.get(user, np.zeros(sim_matrix.shape[0]))[idx])
+		item_quality = merged.loc[merged['Movie_ID'] == movie_id, rating_col]
+		item_quality = float(item_quality.iloc[0]) if not item_quality.empty else 7.0
+		content_rating_est = 2.0 + 8.0 * ((content_score + 1.0) / 2.0)
+		content_rating_est = 0.7 * content_rating_est + 0.3 * item_quality
+		# Collaborative part for hybrid
+		neighbor_sims = predict_collaborative_scores(knn, user_item, movie_id, k=K_NEIGHBORS)
+		b_u = user_mean.get(user, global_mean)
+		b_i = item_mean.get(movie_id, global_mean)
+		numerator = 0.0
+		norm = 0.0
+		if neighbor_sims:
+			user_row = user_item.loc[user].dropna() if (user in user_item.index) else pd.Series(dtype=float)
+			for nb_movie, sim in neighbor_sims.items():
+				if nb_movie in user_row.index:
+					r_uj = float(user_row.loc[nb_movie])
+					b_j = item_mean.get(int(nb_movie), global_mean)
+					numerator += sim * (r_uj - b_u - b_j)
+					norm += abs(sim)
+			if norm > 0:
+				collab_score_train = b_u + b_i + (numerator / norm)
+			else:
+				collab_score_train = np.nan
+		else:
+			collab_score_train = np.nan
+		if np.isnan(collab_score_train):
+			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
+			collab_score_train = item_ratings.mean() if not item_ratings.empty else global_mean
+		# Popularity/Recency mapped
+		title_str = title.iloc[0]
+		pop = popularity.get(title_str, 0.5)
+		rec = recency.get(title_str, 0.5)
+		pop_rating = 2.0 + 8.0 * pop
+		rec_rating = 2.0 + 8.0 * rec
+		hybrid_pred_train = (
+			ALPHA * float(np.clip(content_rating_est, 1.0, 10.0)) +
+			BETA * float(np.clip(collab_score_train, 1.0, 10.0)) +
+			GAMMA * pop_rating +
+			DELTA * rec_rating
+		)
+		content_train_preds.append(float(np.clip(content_rating_est, 1.0, 10.0)))
+		hybrid_train_preds.append(float(np.clip(hybrid_pred_train, 1.0, 10.0)))
+
+	# Determine thresholds so predicted positive rate ~ actual positive rate in training
+	def calibrated_threshold(preds: list, rate: float) -> float:
+		if len(preds) == 0:
+			return RATING_THRESHOLD
+		q = max(0.0, min(1.0, 1.0 - rate))
+		return float(np.quantile(np.array(preds), q))
+
+	content_cls_threshold = calibrated_threshold(content_train_preds, pos_rate)
+	hybrid_cls_threshold = calibrated_threshold(hybrid_train_preds, pos_rate)
+
+	# Predictions and ground truth (test set)
 	y_true_cls = []
 	y_pred_cls_content = []
 	y_pred_cls_collab = []
@@ -287,9 +358,10 @@ def evaluate_models():
 
 		# Classification label predictions (hybrid uses majority vote of signals)
 		y_true_cls.append(true_label)
-		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
+		# Use calibrated thresholds for classification to avoid all-positive predictions
+		y_pred_cls_content.append(1 if content_rating_est >= content_cls_threshold else 0)
 		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		votes = int(content_rating_est >= content_cls_threshold) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= hybrid_cls_threshold)
 		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
