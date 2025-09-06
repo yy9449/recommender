@@ -169,3 +169,7 @@ def collaborative_filtering_enhanced(
     df = df[ordered_cols]
 
     return df.reset_index(drop=True)
+
+
+# Alias to satisfy requested import name
+collaborative_knn = collaborative_filtering_enhanced
