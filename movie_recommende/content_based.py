@@ -168,6 +168,29 @@ def create_genre_features(merged_df):
     return tfidf_matrix, vectorizer, genre_col
 
 @st.cache_data
+def create_genre_binary_features(merged_df):
+    """Create binary one-hot matrix over normalized genres for basic content-based scoring."""
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+    tokens_per_row = merged_df[genre_col].fillna('').apply(normalize_genre_tokens).tolist()
+    # Build vocabulary
+    vocab = {}
+    for toks in tokens_per_row:
+        for t in toks:
+            if t not in vocab:
+                vocab[t] = len(vocab)
+    if not vocab:
+        # Fallback single dummy column
+        mat = np.zeros((len(tokens_per_row), 1), dtype=float)
+        return mat, tokens_per_row, genre_col, vocab
+    mat = np.zeros((len(tokens_per_row), len(vocab)), dtype=float)
+    for i, toks in enumerate(tokens_per_row):
+        for t in toks:
+            j = vocab.get(t)
+            if j is not None:
+                mat[i, j] = 1.0
+    return mat, tokens_per_row, genre_col, vocab
+
+@st.cache_data
 def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=8):
     """Enhanced Content-Based filtering with improved feature engineering and fuzzy matching"""
     if target_movie:
@@ -183,38 +206,29 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
             
         target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
         
-        # Tag-token similarity with re-ranking by genre overlap
-        content_features = create_content_features(merged_df)
+        # BASIC: genre Jaccard (primary) + cosine over binary genre vectors (extra)
+        bin_mat, tokens_per_row, genre_col, _ = create_genre_binary_features(merged_df)
         target_loc = merged_df.index.get_loc(target_idx)
-        target_vec = content_features[target_loc].reshape(1, -1)
-        sims = cosine_similarity(target_vec, content_features).flatten()
-        candidate_k = min(top_n * 5 + 1, len(sims))
-        ranked = np.argsort(-sims)[:candidate_k]
-        ranked = [idx for idx in ranked if idx != target_loc]
-        # Prepare overlap information
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-        all_genres_norm = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
-        target_genres = set(all_genres_norm.iloc[target_loc])
+        # Cosine over binary vectors
+        sims = cosine_similarity([bin_mat[target_loc]], bin_mat).flatten()
+        # Jaccard overlap
+        target_set = set(tokens_per_row[target_loc])
         scored = []
-        for idx in ranked:
-            base = float(sims[idx])
-            cand_genres = set(all_genres_norm.iloc[idx])
-            # Jaccard similarity for genre overlap
-            if target_genres or cand_genres:
-                inter = len(target_genres & cand_genres)
-                union = len(target_genres | cand_genres) if target_genres | cand_genres else 1
-                genre_overlap = inter / union
+        for idx in range(len(tokens_per_row)):
+            if idx == target_loc:
+                continue
+            cand_set = set(tokens_per_row[idx])
+            if not target_set or not cand_set:
+                jacc = 0.0
             else:
-                genre_overlap = 0.0
-            # small rating prior
-            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-            rating_val = merged_df.iloc[idx].get(rating_col, 7.0)
-            try:
-                rating_norm = float(rating_val) / 10.0 if pd.notna(rating_val) else 0.7
-            except Exception:
-                rating_norm = 0.7
-            # final score with stronger genre influence
-            final_score = 0.65 * base + 0.30 * genre_overlap + 0.05 * rating_norm
+                inter = len(target_set & cand_set)
+                union = len(target_set | cand_set)
+                jacc = inter / union if union > 0 else 0.0
+            # require at least 1 shared genre
+            if jacc <= 0:
+                continue
+            # combine: major genre (basic), extra cosine
+            final_score = 0.75 * jacc + 0.25 * float(sims[idx])
             scored.append((final_score, idx))
         scored.sort(key=lambda x: x[0], reverse=True)
         top_indices = [idx for _, idx in scored[:top_n]]
@@ -223,15 +237,35 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         return result_df[['Series_Title', genre_col, rating_col]]
     
     elif genre:
-        genre_features, vectorizer, genre_col = create_genre_features(merged_df)
-        query_vec = vectorizer.transform([genre])
-        sims = cosine_similarity(query_vec, genre_features).flatten()
-        # Require overlap with query tokens
-        all_tokens = merged_df[genre_col].fillna('').apply(normalize_genre_tokens)
+        # BASIC genre query: Jaccard + cosine over binary genre vectors
+        bin_mat, tokens_per_row, genre_col, vocab = create_genre_binary_features(merged_df)
         query_tokens = set(normalize_genre_tokens(genre))
-        ranked = np.argsort(-sims)
-        filtered = [idx for idx in ranked if len(query_tokens & set(all_tokens.iloc[idx])) > 0]
-        top_indices = filtered[:top_n]
+        # build query vector
+        q_vec = np.zeros((bin_mat.shape[1],), dtype=float)
+        for t in query_tokens:
+            j = vocab.get(t)
+            if j is not None:
+                q_vec[j] = 1.0
+        if q_vec.sum() == 0:
+            # fallback: return top popular genres
+            candidates = list(range(len(tokens_per_row)))
+        # cosine
+        sims = cosine_similarity([q_vec], bin_mat).flatten()
+        scored = []
+        for idx, cand_tokens in enumerate(tokens_per_row):
+            cand_set = set(cand_tokens)
+            if not query_tokens or not cand_set:
+                jacc = 0.0
+            else:
+                inter = len(query_tokens & cand_set)
+                union = len(query_tokens | cand_set)
+                jacc = inter / union if union > 0 else 0.0
+            if jacc <= 0:
+                continue
+            final_score = 0.75 * jacc + 0.25 * float(sims[idx])
+            scored.append((final_score, idx))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_indices = [idx for _, idx in scored[:top_n]]
         rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
         result_df = merged_df.iloc[top_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
