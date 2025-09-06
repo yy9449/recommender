@@ -81,9 +81,20 @@ def smart_hybrid_recommendation(
 
     # 1. Content Similarity
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
-    overview_col = 'Overview' if 'Overview' in merged_df.columns else 'Plot'
     
-    soup = (merged_df[overview_col].fillna('') + ' ' + merged_df[genre_col].fillna(''))
+    # Handle overview column with multiple possible names
+    overview_text = ''
+    for col in ['Overview', 'Plot', 'Description', 'Summary']:
+        if col in merged_df.columns:
+            overview_text = merged_df[col].fillna('')
+            break
+    if isinstance(overview_text, str):  # If no column found
+        overview_text = pd.Series([''] * len(merged_df), index=merged_df.index)
+    
+    # Handle genre column
+    genre_text = merged_df[genre_col].fillna('') if genre_col in merged_df.columns else pd.Series([''] * len(merged_df), index=merged_df.index)
+    
+    soup = overview_text + ' ' + genre_text
     tfidf_matrix = TfidfVectorizer(stop_words='english', max_features=5000).fit_transform(soup)
     content_sim_matrix = cosine_similarity(tfidf_matrix)
     content_scores = content_sim_matrix[idx]
