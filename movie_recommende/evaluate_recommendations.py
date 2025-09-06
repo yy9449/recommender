@@ -174,13 +174,23 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 def evaluate_models():
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
+
+	# Filter ratings to those movies present in merged
+	present_ids = set(merged['Movie_ID'].unique())
+	ratings = ratings[ratings['Movie_ID'].isin(present_ids)].copy()
+
+	# Split BEFORE building models to avoid leakage
+	train_df, test_df = split_per_user(ratings)
+
+	# Content features/similarity (independent of split)
 	content_matrix = build_content_matrix(merged)
 	sim_matrix, title_to_idx = predict_content_scores(merged, content_matrix)
-	knn, user_item = build_item_similarity_knn(ratings, merged)
-	popularity, recency = compute_popularity_and_recency(merged, ratings)
 
-	# Split
-	train_df, test_df = split_per_user(ratings)
+	# Collaborative KNN built on training data only
+	knn, user_item = build_item_similarity_knn(train_df, merged)
+
+	# Popularity/recency based on training interactions
+	popularity, recency = compute_popularity_and_recency(merged, train_df)
 
 	# Build quick lookups
 	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
@@ -200,6 +210,13 @@ def evaluate_models():
 		idxs = [i for i in idxs if i is not None]
 		if idxs:
 			profile = sim_matrix[idxs].mean(axis=0)
+			# Per-user min-max normalization to spread scores to [0,1]
+			prof_min = float(np.min(profile))
+			prof_max = float(np.max(profile))
+			if prof_max > prof_min:
+				profile = (profile - prof_min) / (prof_max - prof_min)
+			else:
+				profile = np.zeros_like(profile)
 			user_content_pref[user_id] = profile
 		else:
 			user_content_pref[user_id] = np.zeros(sim_matrix.shape[0])
@@ -286,7 +303,8 @@ def evaluate_models():
 		y_true_cls.append(true_label)
 		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
 		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		pop_rec_avg = (pop_rating + rec_rating) / 2.0
+		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(pop_rec_avg >= RATING_THRESHOLD)
 		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
