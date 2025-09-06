@@ -83,8 +83,8 @@ def create_content_features(merged_df):
     # Emphasize genre/director/rating tokens; keep title minimal
     WEIGHTS = {
         'title': 1,
-        'genre': 3,
-        'director': 2,
+        'genre': 5,
+        'director': 1,
         'rating': 3,
     }
 
