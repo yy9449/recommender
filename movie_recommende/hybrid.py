@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.neighbors import NearestNeighbors
 from content_based import content_based_filtering_enhanced, create_content_features, find_rating_column, find_genre_column
 from collaborative import collaborative_knn, load_user_ratings
 import warnings
@@ -22,26 +24,102 @@ class LinearHybridRecommender:
 
     def _content_scores(self, target_movie, genre, top_n):
         scores = {}
-        results = content_based_filtering_enhanced(self.merged_df, target_movie, genre, top_n * 3)
-        if results is not None and not results.empty:
-            max_rating = results[self.rating_col].max()
-            if max_rating and max_rating > 0:
-                for _, row in results.iterrows():
-                    scores[row['Series_Title']] = float(row[self.rating_col]) / float(max_rating)
+        titles = self.merged_df['Series_Title'].tolist()
+
+        # Case 1: Movie-based similarity using TF-IDF content features
+        if target_movie:
+            # Locate target index (case-insensitive exact match)
+            target_idx = None
+            target_lower = target_movie.strip().lower()
+            for i, t in enumerate(titles):
+                if isinstance(t, str) and t.lower() == target_lower:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                return scores
+
+            # Compute cosine similarity over content features
+            content_features = create_content_features(self.merged_df)
+            sim = cosine_similarity(content_features[target_idx], content_features).flatten()
+            # Build score dict, excluding the target itself
+            for i, title in enumerate(titles):
+                if i == target_idx:
+                    continue
+                # Cosine similarity in [0,1] for TF-IDF
+                scores[title] = float(np.clip(sim[i], 0.0, 1.0))
+
+            # Keep top candidates
+            if len(scores) > top_n * 3:
+                scores = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True)[: top_n * 3])
+            return scores
+
+        # Case 2: Genre query similarity (genre-only TF-IDF)
+        if genre:
+            genre_col = self.genre_col
+            genre_corpus = self.merged_df[genre_col].fillna('').astype(str).tolist()
+            tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+            tfidf_matrix = tfidf.fit_transform(genre_corpus)
+            query_vec = tfidf.transform([genre])
+            sim = cosine_similarity(query_vec, tfidf_matrix).flatten()
+            for i, title in enumerate(titles):
+                scores[title] = float(np.clip(sim[i], 0.0, 1.0))
+            if len(scores) > top_n * 3:
+                scores = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True)[: top_n * 3])
+            return scores
+
         return scores
 
     def _collab_scores(self, target_movie, top_n):
         scores = {}
-        if target_movie and self.user_ratings_df is not None:
-            results = collaborative_knn(self.merged_df, target_movie, top_n=top_n * 3)
-            if results is not None and not results.empty:
-                max_rating = results[self.rating_col].max() if self.rating_col in results.columns else None
-                for _, row in results.iterrows():
-                    if max_rating and max_rating > 0 and self.rating_col in results.columns:
-                        scores[row['Series_Title']] = float(row[self.rating_col]) / float(max_rating)
-                    else:
-                        # If no rating col, treat presence as score 1.0
-                        scores[row['Series_Title']] = 1.0
+        if not target_movie:
+            return scores
+        if self.user_ratings_df is None or self.user_ratings_df.empty:
+            return scores
+        if 'Movie_ID' not in self.merged_df.columns or 'Series_Title' not in self.merged_df.columns:
+            return scores
+
+        # Map title -> Movie_ID
+        title_to_id = dict(self.merged_df[['Series_Title', 'Movie_ID']].values)
+        target_movie_id = None
+        if target_movie in title_to_id:
+            target_movie_id = int(title_to_id[target_movie])
+        else:
+            # case-insensitive
+            match = self.merged_df[self.merged_df['Series_Title'].str.lower() == target_movie.lower()]
+            if not match.empty:
+                target_movie_id = int(match.iloc[0]['Movie_ID'])
+        if target_movie_id is None:
+            return scores
+
+        # Build user-item matrix and KNN model
+        ratings = self.user_ratings_df
+        ratings = ratings[ratings['Movie_ID'].isin(self.merged_df['Movie_ID'])].copy()
+        if ratings.empty:
+            return scores
+        user_item = ratings.pivot_table(index='User_ID', columns='Movie_ID', values='Rating')
+        item_vectors = user_item.fillna(0.0).T
+        if target_movie_id not in item_vectors.index:
+            return scores
+
+        knn = NearestNeighbors(metric='cosine', algorithm='brute')
+        knn.fit(item_vectors)
+
+        idx = item_vectors.index.get_loc(target_movie_id)
+        distances, indices = knn.kneighbors(item_vectors.iloc[[idx]], n_neighbors=min(1 + (top_n * 3), len(item_vectors)))
+        # Convert to similarity and map to titles
+        id_to_title = dict(self.merged_df[['Movie_ID', 'Series_Title']].values)
+        for d, i in zip(distances[0], indices[0]):
+            nb_movie = int(item_vectors.index[i])
+            if nb_movie == target_movie_id:
+                continue
+            sim = 1.0 - float(d)
+            title = id_to_title.get(nb_movie)
+            if title is not None:
+                scores[title] = float(np.clip(sim, 0.0, 1.0))
+
+        # Keep top candidates
+        if len(scores) > top_n * 3:
+            scores = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True)[: top_n * 3])
         return scores
 
     def _popularity_scores(self):
