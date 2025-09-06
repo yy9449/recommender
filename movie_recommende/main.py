@@ -4,11 +4,83 @@ import numpy as np
 import warnings
 import requests
 import io
-from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced
-from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
+
+# Import functions with error handling
+try:
+    from content_based import content_based_filtering_enhanced
+except ImportError:
+    content_based_filtering_enhanced = None
+
+try:
+    from collaborative import collaborative_filtering_enhanced
+except ImportError:
+    collaborative_filtering_enhanced = None
+    
+try:
+    from hybrid import smart_hybrid_recommendation
+except ImportError:
+    smart_hybrid_recommendation = None
+
+# Backup content-based function
+def simple_content_based(merged_df, target_movie, genre_filter=None, top_n=10):
+    """Simplified content-based filtering using available columns"""
+    if not target_movie and not genre_filter:
+        return pd.DataFrame()
+    
+    # Handle genre-only filtering
+    if genre_filter and not target_movie:
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x'
+        if genre_col in merged_df.columns:
+            filtered = merged_df[merged_df[genre_col].str.contains(genre_filter, case=False, na=False)]
+            rating_col = 'IMDB_Rating' if 'IMDB_Rating' in filtered.columns else 'Rating'
+            if rating_col in filtered.columns:
+                filtered = filtered.sort_values(rating_col, ascending=False)
+            return filtered.head(top_n)
+        return pd.DataFrame()
+    
+    # Movie-based filtering
+    if target_movie not in merged_df['Series_Title'].values:
+        return pd.DataFrame()
+    
+    # Simple genre-based similarity
+    target_row = merged_df[merged_df['Series_Title'] == target_movie].iloc[0]
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x'
+    
+    if genre_col not in merged_df.columns:
+        return pd.DataFrame()
+    
+    target_genres = str(target_row[genre_col]).split(', ') if pd.notna(target_row[genre_col]) else []
+    
+    # Find movies with similar genres
+    similar_movies = []
+    for idx, row in merged_df.iterrows():
+        if row['Series_Title'] == target_movie:
+            continue
+        
+        movie_genres = str(row[genre_col]).split(', ') if pd.notna(row[genre_col]) else []
+        common_genres = set(target_genres) & set(movie_genres)
+        
+        if common_genres:
+            similar_movies.append((idx, len(common_genres)))
+    
+    # Sort by genre similarity and rating
+    similar_movies.sort(key=lambda x: x[1], reverse=True)
+    top_indices = [x[0] for x in similar_movies[:top_n*2]]
+    
+    results = merged_df.loc[top_indices]
+    
+    # Apply genre filter if provided
+    if genre_filter:
+        results = results[results[genre_col].str.contains(genre_filter, case=False, na=False)]
+    
+    # Sort by rating
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
+    if rating_col in results.columns:
+        results = results.sort_values(rating_col, ascending=False)
+    
+    return results.head(top_n)
 
 # =========================
 # Streamlit Configuration
@@ -173,7 +245,7 @@ def display_movie_posters(results_df, merged_df):
         
         poster_url = full_movie_info.get('Poster_Link', '')
         rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
-        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x'
         year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
         
         movies_with_posters.append({
@@ -336,7 +408,7 @@ def main():
     
     # Genre selection
     st.sidebar.markdown("**🎭 Genre Selection**")
-    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre_x'
     all_genres = set()
     for genre_str in merged_df[genre_col].dropna():
         if isinstance(genre_str, str):
@@ -401,50 +473,43 @@ def main():
         with st.spinner("🎬 Generating personalized recommendations..."):
             results = None
             
-            # Clear cache before generating recommendations to avoid cached errors
-            if hasattr(st.cache_data, 'clear'):
-                content_based_filtering_enhanced.clear()
-                if 'smart_hybrid_recommendation' in globals():
-                    smart_hybrid_recommendation.clear()
-            
             try:
-                # Debug: Show available columns
-                st.write("Debug - Available columns:", list(merged_df.columns))
-                
                 if algorithm == "Content-Based":
-                    # Check if the function supports genre_filter parameter
-                    import inspect
-                    sig = inspect.signature(content_based_filtering_enhanced)
-                    
-                    if 'genre_filter' in sig.parameters:
-                        results = content_based_filtering_enhanced(
+                    # Try original function first, fallback to simple version
+                    if content_based_filtering_enhanced is not None:
+                        try:
+                            results = content_based_filtering_enhanced(
+                                merged_df, 
+                                target_movie=movie_title if movie_title else None,
+                                genre_filter=genre_input if genre_input else None,
+                                top_n=top_n
+                            )
+                        except:
+                            # Fallback to simple function
+                            results = simple_content_based(
+                                merged_df, 
+                                target_movie=movie_title if movie_title else None,
+                                genre_filter=genre_input if genre_input else None,
+                                top_n=top_n
+                            )
+                    else:
+                        results = simple_content_based(
                             merged_df, 
                             target_movie=movie_title if movie_title else None,
                             genre_filter=genre_input if genre_input else None,
                             top_n=top_n
                         )
-                    else:
-                        # Fallback to basic function call
-                        if movie_title:
-                            results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
-                        else:
-                            st.warning("This version of content-based filtering requires a movie selection.")
-                            return
                     
                 elif algorithm == "Collaborative Filtering":
-                    if movie_title and user_ratings_df is not None:
+                    if movie_title and user_ratings_df is not None and collaborative_filtering_enhanced is not None:
                         results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
                     else:
                         st.warning("Collaborative filtering requires a movie title and user ratings data.")
                         return
                         
                 else:  # Hybrid
-                    if user_ratings_df is not None:
-                        # Check if the function supports genre_filter parameter
-                        import inspect
-                        sig = inspect.signature(smart_hybrid_recommendation)
-                        
-                        if 'genre_filter' in sig.parameters:
+                    if user_ratings_df is not None and smart_hybrid_recommendation is not None:
+                        try:
                             results = smart_hybrid_recommendation(
                                 merged_df,
                                 user_ratings_df=user_ratings_df,
@@ -452,30 +517,24 @@ def main():
                                 genre_filter=genre_input if genre_input else None,
                                 top_n=top_n
                             )
-                        else:
-                            # Fallback to basic function call
-                            if movie_title:
-                                results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, top_n)
-                            else:
-                                st.warning("This version of hybrid filtering requires a movie selection.")
-                                return
+                        except:
+                            # Fallback to content-based
+                            st.info("Hybrid filtering failed, falling back to content-based recommendations.")
+                            results = simple_content_based(
+                                merged_df,
+                                target_movie=movie_title if movie_title else None,
+                                genre_filter=genre_input if genre_input else None,
+                                top_n=top_n
+                            )
                     else:
                         # Fallback to content-based if no user data
                         st.info("No user data available, falling back to content-based recommendations.")
-                        if movie_title:
-                            sig = inspect.signature(content_based_filtering_enhanced)
-                            if 'genre_filter' in sig.parameters:
-                                results = content_based_filtering_enhanced(
-                                    merged_df,
-                                    target_movie=movie_title,
-                                    genre_filter=genre_input if genre_input else None,
-                                    top_n=top_n
-                                )
-                            else:
-                                results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
-                        else:
-                            st.warning("Please select a movie for recommendations.")
-                            return
+                        results = simple_content_based(
+                            merged_df,
+                            target_movie=movie_title if movie_title else None,
+                            genre_filter=genre_input if genre_input else None,
+                            top_n=top_n
+                        )
                         
             except Exception as e:
                 st.error(f"❌ Error generating recommendations: {str(e)}")
@@ -495,7 +554,7 @@ def main():
                     # Format the results for better display
                     display_results = results.copy()
                     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in results.columns else 'Rating'
-                    genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre'
+                    genre_col = 'Genre_y' if 'Genre_y' in results.columns else 'Genre_x'
                     
                     display_results = display_results.rename(columns={
                         'Series_Title': 'Movie Title',
