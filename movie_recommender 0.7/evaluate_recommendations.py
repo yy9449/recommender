@@ -337,7 +337,6 @@ def evaluate_models():
 			'Method Used': name,
 			'Precision': round(results[name]['precision'], 2),
 			'Recall': round(results[name]['recall'], 2),
-			'Balanced Acc': round(results[name]['balanced_accuracy'], 2),
 			'RMSE': round(results[name]['rmse'], 2),
 			'MAE': round(results[name]['mae'], 2),
 			'Notes': (
@@ -347,7 +346,7 @@ def evaluate_models():
 			)
 		}
 		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'Balanced Acc', 'RMSE', 'MAE', 'Notes'])
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'MAE', 'Notes'])
 	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
 
