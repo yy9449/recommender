@@ -90,7 +90,7 @@ def main():
             # Genre selection
             # Extracting unique genres can be complex if a movie has multiple genres
             # Here's a simple approach:
-            all_genres = merged_df['Genre_x'].str.split(', ').explode().unique()
+            all_genres = merged_df['Genre_x'].astype(str).str.split(', ').explode().unique()
             selected_genre = st.selectbox(
                 "Select a Genre (Optional)",
                 options=[""] + sorted(all_genres),
