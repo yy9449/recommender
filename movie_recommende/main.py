@@ -4,9 +4,14 @@ import numpy as np
 import warnings
 import requests
 import io
-from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
-from hybrid import smart_hybrid_recommendation
+try:
+    from content_based import content_based_filtering_enhanced
+    from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
+    from hybrid import smart_hybrid_recommendation
+except ImportError as e:
+    st.error(f"Import error: {e}")
+    st.error("Please ensure all files (content_based.py, collaborative.py, hybrid.py) are in the same directory as main.py")
+    st.stop()
 
 warnings.filterwarnings('ignore')
 
