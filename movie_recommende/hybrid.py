@@ -9,22 +9,21 @@ import streamlit as st
 
 # --- Your defined recommendation weights ---
 ALPHA = 0.4  # Content-based
-BETA = 0.4   # Collaborative
+BETA = 0.4   # Collaborative (proxied)
 GAMMA = 0.1  # Popularity
 DELTA = 0.1  # Recency
 
 def _calculate_popularity(df: pd.DataFrame) -> pd.Series:
-    log_votes = np.log1p(df['No_of_Votes'].fillna(0))
-    rating = df['IMDB_Rating'].fillna(df['IMDB_Rating'].mean())
+    log_votes = np.log1p(pd.to_numeric(df['No_of_Votes'], errors='coerce').fillna(0))
+    rating = pd.to_numeric(df['IMDB_Rating'], errors='coerce').fillna(df['IMDB_Rating'].mean())
     return rating * log_votes
 
 def _calculate_recency(df: pd.DataFrame) -> pd.Series:
     current_year = pd.to_datetime('today').year
-    # Convert Released_Year to numeric, coercing errors to NaN, then fill NaN
     years = pd.to_numeric(df['Released_Year'], errors='coerce')
     age = current_year - years.fillna(years.mode()[0])
     age = age.clip(lower=0)
-    return (0.98 ** age)
+    return 0.98 ** age
 
 @st.cache_data
 def smart_hybrid_recommendation(
@@ -34,12 +33,12 @@ def smart_hybrid_recommendation(
     top_n: int = 10
 ):
     """
-    Generates hybrid recommendations using the DEFINITIVE column names from main.py.
+    Generates hybrid recommendations using the full weighting system and corrected column names.
     """
     if target_movie not in merged_df['Series_Title'].values:
         return pd.DataFrame()
 
-    # --- 1. Content-Based Similarity ---
+    # --- 1. Content-Based Similarity (using definitive _x columns) ---
     soup = (
         merged_df['Overview_x'].fillna('') + ' ' +
         merged_df['Genre_x'].fillna('') + ' ' +
@@ -51,13 +50,13 @@ def smart_hybrid_recommendation(
     
     idx = merged_df[merged_df['Series_Title'] == target_movie].index[0]
     content_scores = cosine_sim[idx]
-    collaborative_scores = content_scores # Using content as a proxy
+    collaborative_scores = content_scores # Using content as a proxy signal
 
     # --- 2. Popularity & Recency Scores ---
     popularity_scores = _calculate_popularity(merged_df)
     recency_scores = _calculate_recency(merged_df)
 
-    # --- 3. Scale All Scores ---
+    # --- 3. Scale All Component Scores ---
     scaler = MinMaxScaler()
     scaled_content = scaler.fit_transform(content_scores.reshape(-1, 1)).flatten()
     scaled_collaborative = scaler.fit_transform(collaborative_scores.reshape(-1, 1)).flatten()
