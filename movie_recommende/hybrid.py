@@ -8,7 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
 
 # --- Your defined recommendation weights ---
-ALPHA = 0.4  # Content-based
+ALPHA = 0.4  # Content
 BETA = 0.4   # Collaborative (proxied)
 GAMMA = 0.1  # Popularity
 DELTA = 0.1  # Recency
@@ -27,36 +27,36 @@ def _calculate_recency(df: pd.DataFrame) -> pd.Series:
 
 @st.cache_data
 def smart_hybrid_recommendation(
-    merged_df: pd.DataFrame,
+    clean_df: pd.DataFrame,
     user_ratings_df: pd.DataFrame,
     target_movie: str,
     top_n: int = 10
 ):
     """
-    Generates hybrid recommendations using the full weighting system and corrected column names.
+    Generates hybrid recommendations using the clean, predictable dataframe from main.py.
     """
-    if target_movie not in merged_df['Series_Title'].values:
+    if target_movie not in clean_df['Series_Title'].values:
         return pd.DataFrame()
 
-    # --- 1. Content-Based Similarity (using definitive _x columns) ---
+    # --- 1. Content Similarity (using clean column names) ---
     soup = (
-        merged_df['Overview_x'].fillna('') + ' ' +
-        merged_df['Genre_x'].fillna('') + ' ' +
-        merged_df['Director'].fillna('')
+        clean_df['Overview'].fillna('') + ' ' +
+        clean_df['Genre'].fillna('') + ' ' +
+        clean_df['Director'].fillna('')
     )
     tfidf = TfidfVectorizer(stop_words='english')
     tfidf_matrix = tfidf.fit_transform(soup)
     cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
     
-    idx = merged_df[merged_df['Series_Title'] == target_movie].index[0]
+    idx = clean_df[clean_df['Series_Title'] == target_movie].index[0]
     content_scores = cosine_sim[idx]
-    collaborative_scores = content_scores # Using content as a proxy signal
+    collaborative_scores = content_scores  # Using content as a proxy signal
 
     # --- 2. Popularity & Recency Scores ---
-    popularity_scores = _calculate_popularity(merged_df)
-    recency_scores = _calculate_recency(merged_df)
+    popularity_scores = _calculate_popularity(clean_df)
+    recency_scores = _calculate_recency(clean_df)
 
-    # --- 3. Scale All Component Scores ---
+    # --- 3. Scale All Scores ---
     scaler = MinMaxScaler()
     scaled_content = scaler.fit_transform(content_scores.reshape(-1, 1)).flatten()
     scaled_collaborative = scaler.fit_transform(collaborative_scores.reshape(-1, 1)).flatten()
@@ -72,8 +72,9 @@ def smart_hybrid_recommendation(
     )
     
     # --- 5. Generate Final Recommendations ---
-    merged_df['hybrid_score'] = final_scores
-    recommendations = merged_df.sort_values(by='hybrid_score', ascending=False)
+    df_copy = clean_df.copy()
+    df_copy['hybrid_score'] = final_scores
+    recommendations = df_copy.sort_values(by='hybrid_score', ascending=False)
     recommendations = recommendations[recommendations['Series_Title'] != target_movie]
     
     return recommendations.head(top_n)
