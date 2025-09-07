@@ -1,125 +1,96 @@
-# main.py
-
 import streamlit as st
 import pandas as pd
+import numpy as np
 import warnings
 import requests
 import io
-
-# --- A fully synchronized set of imports ---
 from content_based import content_based_filtering_enhanced
-from collaborative import collaborative_filtering_enhanced
+from collaborative import collaborative_filtering_enhanced, load_user_ratings, diagnose_data_linking
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
 
 # =========================
-# Streamlit Page Configuration
+# Streamlit Configuration
 # =========================
-st.set_page_config(page_title="🎬 Movie Recommender", page_icon="🎬", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="🎬 Movie Recommender",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 st.title("🎬 Movie Recommendation System")
+st.markdown("---")
 
 # =========================
-# Data Loading and Preparation (Completely Rewritten for Consistency)
+# GitHub CSV Loading Functions
 # =========================
 @st.cache_data
+def load_csv_from_github(file_url, file_name):
+    """Load CSV file from GitHub repository - silent version"""
+    try:
+        response = requests.get(file_url, timeout=30)
+        response.raise_for_status()
+        
+        # Read CSV from response content
+        csv_content = io.StringIO(response.text)
+        df = pd.read_csv(csv_content)
+        
+        # Silent success - no st.success message
+        return df
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Failed to load {file_name} from GitHub: {str(e)}")
+        return None
+    except pd.errors.EmptyDataError:
+        st.error(f"❌ {file_name} is empty or corrupted")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error processing {file_name}: {str(e)}")
+        return None
+
+
+@st.cache_data
 def load_and_prepare_data():
-    """
-    Loads, merges, and cleans data from GitHub with a local fallback.
-    This new version creates a single, clean dataframe with consistent column names.
-    """
+    """Load CSVs from GitHub and prepare data for recommendation algorithms - silent version"""
+    
+    # GitHub raw file URLs - replace with your actual repository URLs
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
+    # File URLs
+    movies_url = github_base_url + "movies.csv"
+    imdb_url = github_base_url + "imdb_top_1000.csv"
+    user_ratings_url = github_base_url + "user_movie_rating.csv"
+    
+    # Silent loading - show minimal progress info
+    with st.spinner("Loading datasets..."):
+        movies_df = load_csv_from_github(movies_url, "movies.csv")
+        imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
+        user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
+    
+    # Check if required files loaded successfully
+    if movies_df is None or imdb_df is None:
+        return None, None, "❌ Required CSV files (movies.csv, imdb_top_1000.csv) could not be loaded from GitHub"
+    
+    # Store user ratings in session state for other functions to access - silent
+    if user_ratings_df is not None:
+        st.session_state['user_ratings_df'] = user_ratings_df
+        # Silent success - no message
+    else:
+        # Only show warning if explicitly needed
+        if 'user_ratings_df' in st.session_state:
+            del st.session_state['user_ratings_df']
+    
     try:
-        imdb_df = pd.read_csv(github_base_url + "imdb_top_1000.csv")
-        movies_df = pd.read_csv(github_base_url + "movies.csv")
-        user_ratings_df = pd.read_csv(github_base_url + "user_movie_rating.csv")
-        st.session_state['data_source'] = "GitHub"
-    except Exception:
-        st.warning("⚠️ GitHub loading failed. Attempting to load local files...")
-        try:
-            imdb_df = pd.read_csv("imdb_top_1000.csv")
-            movies_df = pd.read_csv("movies.csv")
-            user_ratings_df = pd.read_csv("user_movie_rating.csv")
-            st.session_state['data_source'] = "Local Files"
-        except FileNotFoundError:
-            st.error("❌ CRITICAL ERROR: Required CSV files not found. The app cannot run.")
-            return None, None
-            
-    # --- The Definitive Merge and Clean Strategy ---
-    # Merge the dataframes, creating '_x' and '_y' suffixes for overlapping columns.
-    merged_df = pd.merge(imdb_df, movies_df, on="Series_Title", how="left", suffixes=('_imdb', '_movies'))
-
-    # Coalesce overlapping columns: prefer the richer '_imdb' data, fall back to '_movies'.
-    # This creates ONE clean column and removes the confusing suffixes.
-    for col in ['Genre', 'Overview', 'Director']:
-        imdb_col = f'{col}_imdb'
-        movies_col = f'{col}_movies'
-        if imdb_col in merged_df and movies_col in merged_df:
-            merged_df[col] = merged_df[imdb_col].fillna(merged_df[movies_col])
-            merged_df.drop(columns=[imdb_col, movies_col], inplace=True)
-
-    # Ensure a consistent Movie_ID column exists for linking
-    if 'Movie_ID' not in merged_df.columns:
-        merged_df['Movie_ID'] = merged_df.index
-    merged_df['Movie_ID'] = merged_df['Movie_ID'].fillna(pd.Series(merged_df.index)).astype(int)
-
-    return merged_df.drop_duplicates(subset=['Series_Title']).reset_index(drop=True), user_ratings_df
-
-# =========================
-# Main Application
-# =========================
-def main():
-    merged_df, user_ratings_df = load_and_prepare_data()
-
-    if merged_df is None:
-        st.stop()
-
-    st.success(f"🎉 Datasets loaded and prepared from {st.session_state.get('data_source', 'a source')}. Ready to recommend!")
-
-    with st.sidebar:
-        st.header("🎯 Recommendation Settings")
-        movie_titles = sorted(merged_df['Series_Title'].dropna().unique())
-        movie_title = st.selectbox("1. Select a Movie:", [""] + movie_titles)
+        # Validate required columns
+        if 'Series_Title' not in movies_df.columns or 'Series_Title' not in imdb_df.columns:
+            return None, None, "❌ Missing Series_Title column in one or both datasets"
         
-        all_genres = sorted(merged_df['Genre'].dropna().str.split(', ').explode().unique())
-        genre_input = st.selectbox("2. Filter by Genre (Optional):", [""] + all_genres)
+        # Check if movies.csv has Movie_ID
+        if 'Movie_ID' not in movies_df.columns:
+            movies_df['Movie_ID'] = range(len(movies_df))
+            # Silent addition - no info message
         
-        algorithm = st.selectbox("3. Choose Algorithm:", ["Hybrid", "Content-Based", "Collaborative"])
-        top_n = st.slider("4. Number of Recommendations:", 5, 20, 10)
-        generate_button = st.button("🚀 Generate Recommendations", type="primary")
-
-    if generate_button:
-        if not movie_title:
-            st.error("❌ Please select a movie to get recommendations.")
-            return
-
-        with st.spinner("Finding movies you'll love..."):
-            results = pd.DataFrame()
-
-            if algorithm == "Content-Based":
-                results = content_based_filtering_enhanced(merged_df, movie_title, top_n)
-            elif algorithm == "Collaborative":
-                results = collaborative_filtering_enhanced(merged_df, user_ratings_df, movie_title, top_n)
-            elif algorithm == "Hybrid":
-                results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, top_n)
-
-            if results is not None and not results.empty:
-                if genre_input:
-                    results = results[results['Genre'].str.contains(genre_input, na=False, case=False)]
-
-                if not results.empty:
-                    st.subheader(f"Top {len(results)} Recommendations for '{movie_title}'")
-                    for i in range(0, len(results), 5):
-                        cols = st.columns(5)
-                        for j, (_, row) in enumerate(results.iloc[i:i+5].iterrows()):
-                            with cols[j]:
-                                st.image(row.get('Poster_Link', ''), use_column_width=True, caption=row['Series_Title'])
-                                st.write(f"⭐ {row.get('IMDB_Rating', 'N/A')}")
-                else:
-                    st.warning(f"No recommendations for '{movie_title}' matched the genre '{genre_input}'.")
-            else:
-                st.error(f"Could not generate recommendations for '{movie_title}' with the {algorithm} algorithm.")
-
-if __name__ == "__main__":
-    main()
+        # Merge datasets with proper column handling
+        merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how
