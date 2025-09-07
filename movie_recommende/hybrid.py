@@ -1,60 +1,7 @@
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import warnings
-import streamlit as st
-
-warnings.filterwarnings('ignore')
-
-# Import collaborative filtering components
-try:
-    from surprise import SVD, Reader, Dataset
-    SURPRISE_AVAILABLE = True
-except ImportError:
-    SURPRISE_AVAILABLE = False
-
-# Global SVD model cache
-svd_model = None
-
-@st.cache_data
-def load_user_ratings():
-    """Load user ratings from session state or CSV"""
-    try:
-        if 'user_ratings_df' in st.session_state:
-            df = st.session_state['user_ratings_df']
-            if df is not None and not df.empty:
-                return df
-    except Exception:
-        pass
-    try:
-        return pd.read_csv('user_movie_rating.csv')
-    except Exception:
-        return None
-
-def train_svd_model(ratings_df):
-    """Train SVD model for collaborative filtering"""
-    global svd_model
-    if not SURPRISE_AVAILABLE or ratings_df is None or ratings_df.empty:
-        return None
-    
-    try:
-        reader = Reader(rating_scale=(1, 10))
-        data = Dataset.load_from_df(ratings_df[['User_ID', 'Movie_ID', 'Rating']], reader)
-        trainset = data.build_full_trainset()
-        
-        svd = SVD(n_epochs=20, n_factors=50, random_state=42)
-        svd.fit(trainset)
-        svd_model = svd
-        return svd
-    except Exception:
-        return None
-
 def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, df=None, 
                                ratings_df=None, top_n=10):
     """
-    Simplified hybrid recommendation system.
+    Fixed hybrid recommendation system that properly integrates all components.
     FinalScore = 0.3×Content + 0.5×Collaborative + 0.1×Popularity + 0.1×Recency
     """
     
@@ -70,7 +17,15 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
     if svd_model is None and ratings_df is not None:
         svd_model = train_svd_model(ratings_df)
     
-    # 1. Content-Based Scores
+    # Get all available movies for recommendation
+    all_movie_ids = df['Movie_ID'].dropna().unique().tolist()
+    
+    # Remove movies already rated by user (optional - you might want to keep them)
+    user_rated = []
+    if ratings_df is not None and not ratings_df.empty:
+        user_rated = ratings_df[ratings_df['User_ID'] == user_id]['Movie_ID'].tolist()
+    
+    # 1. CONTENT-BASED SCORES
     content_scores = {}
     df_copy = df.copy().fillna('')
     df_copy['soup'] = df_copy['Genre'] + ' ' + df_copy['Overview'] + ' ' + df_copy['Director'] + ' ' + df_copy['Stars']
@@ -80,6 +35,7 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
     cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
     
     if movie_title:
+        # Movie-based content filtering
         indices = pd.Series(df_copy.index, index=df_copy['Series_Title']).drop_duplicates()
         if movie_title in indices:
             idx = indices[movie_title]
@@ -92,32 +48,83 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
                     if genre_input.lower() in str(df_copy.iloc[i][genre_col]).lower():
                         sim_scores[i] = (i, score + 0.2)
             
+            # Store content scores for ALL movies, not just similar ones
             for i, score in sim_scores:
-                if 'Movie_ID' in df_copy.iloc[i]:
+                if 'Movie_ID' in df_copy.iloc[i] and pd.notna(df_copy.iloc[i]['Movie_ID']):
                     content_scores[df_copy.iloc[i]['Movie_ID']] = score
+        else:
+            # Movie not found, give all movies a base content score
+            for movie_id in all_movie_ids:
+                content_scores[movie_id] = 0.1
     
     elif genre_input:
-        # Genre-based scoring when no movie selected
+        # Genre-based content filtering
         genre_col = 'Genre_y' if 'Genre_y' in df_copy.columns else 'Genre'
         for idx, row in df_copy.iterrows():
-            if 'Movie_ID' in row:
+            if 'Movie_ID' in row and pd.notna(row['Movie_ID']):
                 score = 0.8 if genre_input.lower() in str(row[genre_col]).lower() else 0.1
                 content_scores[row['Movie_ID']] = score
+    else:
+        # No specific content preferences, give all movies equal content score
+        for movie_id in all_movie_ids:
+            content_scores[movie_id] = 0.5
     
-    # 2. Collaborative Filtering Scores
+    # 2. COLLABORATIVE FILTERING SCORES - FIXED!
     collab_scores = {}
+    
     if SURPRISE_AVAILABLE and svd_model and ratings_df is not None:
-        user_rated = ratings_df[ratings_df['User_ID'] == user_id]['Movie_ID'].tolist()
-        unrated_movies = [mid for mid in df['Movie_ID'].unique() if mid not in user_rated]
-        
-        for movie_id in unrated_movies:
+        # Get collaborative scores for ALL movies (not just unrated ones)
+        for movie_id in all_movie_ids:
             try:
                 pred = svd_model.predict(user_id, movie_id)
                 collab_scores[movie_id] = pred.est
             except:
-                collab_scores[movie_id] = 5.0
+                collab_scores[movie_id] = 5.0  # Default score
+        
+        # BONUS: Add collaborative similarity boost
+        # Find movies liked by similar users
+        if user_rated:
+            # Get users who rated similar movies highly
+            similar_users = []
+            for rated_movie in user_rated[-10]:  # Check last 10 rated movies
+                user_rating = ratings_df[
+                    (ratings_df['User_ID'] == user_id) & 
+                    (ratings_df['Movie_ID'] == rated_movie)
+                ]['Rating'].iloc[0] if len(ratings_df[
+                    (ratings_df['User_ID'] == user_id) & 
+                    (ratings_df['Movie_ID'] == rated_movie)
+                ]) > 0 else 5
+                
+                if user_rating >= 7:  # User liked this movie
+                    # Find other users who also liked it
+                    similar_users.extend(
+                        ratings_df[
+                            (ratings_df['Movie_ID'] == rated_movie) & 
+                            (ratings_df['Rating'] >= 7) & 
+                            (ratings_df['User_ID'] != user_id)
+                        ]['User_ID'].tolist()
+                    )
+            
+            # Boost scores for movies liked by similar users
+            if similar_users:
+                similar_users = list(set(similar_users))[:20]  # Top 20 similar users
+                for movie_id in all_movie_ids:
+                    if movie_id not in user_rated:  # Don't boost already rated movies
+                        similar_ratings = ratings_df[
+                            (ratings_df['User_ID'].isin(similar_users)) & 
+                            (ratings_df['Movie_ID'] == movie_id) & 
+                            (ratings_df['Rating'] >= 7)
+                        ]
+                        if len(similar_ratings) > 0:
+                            boost = min(len(similar_ratings) * 0.1, 1.0)  # Max boost of 1.0
+                            collab_scores[movie_id] = min(collab_scores.get(movie_id, 5.0) + boost, 10.0)
     
-    # 3. Popularity Scores (IMDB_Rating × log(votes))
+    else:
+        # No collaborative filtering available, use default scores
+        for movie_id in all_movie_ids:
+            collab_scores[movie_id] = 5.0
+    
+    # 3. POPULARITY SCORES (same as before)
     popularity_scores = {}
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in df.columns else 'Rating'
     votes_col = 'No_of_Votes' if 'No_of_Votes' in df.columns else None
@@ -136,7 +143,7 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
         
         popularity_scores[movie_id] = float(rating) * np.log(votes + 1)
     
-    # 4. Recency Scores (simple year-based)
+    # 4. RECENCY SCORES (same as before)
     recency_scores = {}
     year_col = 'Released_Year' if 'Released_Year' in df.columns else 'Year'
     current_year = 2024
@@ -157,12 +164,8 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
         years_old = max(current_year - year, 0)
         recency_scores[movie_id] = max(0.1, 1.0 - (years_old * 0.05))  # Decay 5% per year
     
-    # 5. Combine all scores
-    all_movie_ids = set()
-    all_movie_ids.update(content_scores.keys())
-    all_movie_ids.update(collab_scores.keys())
-    all_movie_ids.update(popularity_scores.keys())
-    all_movie_ids.update(recency_scores.keys())
+    # 5. COMBINE ALL SCORES - Now all components contribute equally
+    all_movie_ids = set(all_movie_ids)  # Convert to set to remove duplicates
     
     if not all_movie_ids:
         return pd.DataFrame()
@@ -203,41 +206,8 @@ def smart_hybrid_recommendation(user_id=1, movie_title=None, genre_input=None, d
     if movie_title and not result_df.empty:
         result_df = result_df[result_df['Series_Title'] != movie_title]
     
+    # Remove movies user has already rated (optional)
+    if user_rated:
+        result_df = result_df[~result_df['Movie_ID'].isin(user_rated)]
+    
     return result_df.head(top_n)
-
-# Backward compatibility functions
-def predict_hybrid_ratings(user_id, movie_id, train_df, movies_df, tfidf_matrix, 
-                          cosine_sim, indices, svd_model, content_weight=0.3, collab_weight=0.5):
-    """Single rating prediction for evaluation"""
-    
-    # Content prediction
-    content_pred = 3.0
-    if movie_id in indices:
-        user_ratings = train_df[train_df['User_ID'] == user_id]
-        if not user_ratings.empty:
-            target_idx = indices[movie_id]
-            rated_indices = [indices[mid] for mid in user_ratings['Movie_ID'] if mid in indices]
-            if rated_indices:
-                sim_scores = cosine_sim[target_idx, rated_indices]
-                if len(sim_scores) > 0:
-                    weighted_sim = np.dot(sim_scores, user_ratings['Rating']) / user_ratings['Rating'].sum()
-                    content_pred = weighted_sim * 9 + 1
-    
-    # Collaborative prediction
-    collab_pred = 5.0
-    if svd_model:
-        try:
-            pred = svd_model.predict(user_id, movie_id)
-            collab_pred = pred.est
-        except:
-            pass
-    
-    # Simple popularity and recency
-    popularity_score = 0.5
-    recency_score = 0.5
-    
-    # Combine: 0.3×Content + 0.5×Collaborative + 0.1×Popularity + 0.1×Recency
-    final_score = (content_pred * 0.3 + collab_pred * 0.5 + 
-                   popularity_score * 0.1 + recency_score * 0.1)
-    
-    return final_score
