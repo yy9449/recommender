@@ -133,7 +133,11 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         content_features = create_content_features(merged_df)
         target_features = content_features[merged_df.index.get_loc(target_idx)].reshape(1, -1)
         similarities = cosine_similarity(target_features, content_features).flatten()
-        similar_indices = np.argsort(-similarities)[1:top_n+1]
+        # Exclude the target itself, then take top_n items
+        similar_indices = np.argsort(-similarities)
+        # remove the index of the target movie
+        target_loc = merged_df.index.get_loc(target_idx)
+        similar_indices = [i for i in similar_indices if i != target_loc][:top_n]
         
         result_df = merged_df.iloc[similar_indices]
         rating_col = find_rating_column(merged_df)
@@ -150,7 +154,8 @@ def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, t
         tfidf_matrix = tfidf.fit_transform(genre_corpus)
         query_vector = tfidf.transform([genre])
         similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
-        similar_indices = np.argsort(-similarities)[1:top_n+1]
+        # For genre query, do not drop the best match; take top_n directly
+        similar_indices = np.argsort(-similarities)[:top_n]
         
         result_df = merged_df.iloc[similar_indices]
         return result_df[['Series_Title', genre_col, rating_col]]
