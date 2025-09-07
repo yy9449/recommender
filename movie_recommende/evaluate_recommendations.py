@@ -1,271 +1,222 @@
-# evaluate_recommendations.py (Optimized for better performance)
+#!/usr/bin/env python3
+"""
+Simple Movie Recommendation System Evaluation
+Usage: python evaluate_recommendations.py
+"""
 
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    precision_score, recall_score, f1_score, accuracy_score,
-    mean_squared_error, classification_report
-)
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from collections import defaultdict
 import warnings
-
-# Note: Run 'pip install scikit-surprise' locally to enable SVD evaluation
-# This import is intentionally optional to avoid Streamlit deployment issues
-try:
-    from surprise import SVD, Reader, Dataset
-    SURPRISE_AVAILABLE = True
-    print("✅ Surprise library available - SVD evaluation enabled")
-except ImportError:
-    SURPRISE_AVAILABLE = False
-    print("⚠️  Surprise library not available. Install with: pip install scikit-surprise")
+import os
+import sys
+from sklearn.metrics import mean_squared_error
 
 warnings.filterwarnings('ignore')
 
-# --- Optimized Configuration ---
-RATING_THRESHOLD = 4.0  # Raised threshold - movies 6+ are "good"
-TEST_SIZE = 0.15  # Smaller test set = more training data
-RANDOM_STATE = 42
-MIN_RATINGS_PER_USER = 5  # Filter sparse users
-MIN_RATINGS_PER_MOVIE = 3  # Filter sparse movies
-
-# --- Data Loading with Filtering ---
-def load_and_prepare_data():
-    movies = pd.read_csv('movies.csv')
-    imdb = pd.read_csv('imdb_top_1000.csv')
-    user_ratings = pd.read_csv('user_movie_rating.csv')
-
-    if 'Movie_ID' not in movies.columns:
-        movies['Movie_ID'] = range(len(movies))
-
-    merged_df = pd.merge(movies, imdb, on='Series_Title', how='left')
-
-    for col in ['Genre', 'Overview', 'Director', 'Stars']:
-        col_x, col_y = f'{col}_x', f'{col}_y'
-        if col_y in merged_df.columns:
-            merged_df[col] = merged_df[col_y].fillna(merged_df.get(col_x, ''))
-        elif col_x in merged_df.columns:
-             merged_df[col] = merged_df[col_x]
-        else:
-             merged_df[col] = ''
-
-    for col in ['IMDB_Rating', 'No_of_Votes', 'Released_Year']:
-        if col in merged_df.columns and pd.api.types.is_numeric_dtype(merged_df[col]):
-            merged_df[col] = merged_df[col].fillna(merged_df[col].median())
+def load_data():
+    """Load datasets"""
+    print("Loading datasets...")
     
-    merged_df = merged_df.dropna(subset=['Movie_ID']).drop_duplicates(subset=['Movie_ID'])
-    merged_df['Movie_ID'] = merged_df['Movie_ID'].astype(int)
+    # Load movies and IMDB data
+    movies_df = pd.read_csv("movies.csv")
+    imdb_df = pd.read_csv("imdb_top_1000.csv")
     
-    # OPTIMIZATION: Filter out sparse users and movies
-    user_counts = user_ratings['User_ID'].value_counts()
-    movie_counts = user_ratings['Movie_ID'].value_counts()
+    # Add Movie_ID if missing
+    if 'Movie_ID' not in movies_df.columns:
+        movies_df['Movie_ID'] = range(len(movies_df))
     
-    valid_users = user_counts[user_counts >= MIN_RATINGS_PER_USER].index
-    valid_movies = movie_counts[movie_counts >= MIN_RATINGS_PER_MOVIE].index
+    # Merge datasets
+    merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
+    merged_df = merged_df.drop_duplicates(subset="Series_Title")
     
-    user_ratings_filtered = user_ratings[
-        (user_ratings['User_ID'].isin(valid_users)) & 
-        (user_ratings['Movie_ID'].isin(valid_movies))
+    # Ensure Movie_ID is preserved
+    if 'Movie_ID' not in merged_df.columns:
+        merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
+    
+    print(f"Dataset loaded: {len(merged_df)} movies")
+    return merged_df
+
+def import_algorithms():
+    """Import recommendation functions"""
+    try:
+        from content_based import content_based_filtering_enhanced
+        from collaborative import collaborative_filtering_enhanced
+        from hybrid import smart_hybrid_recommendation
+        
+        return {
+            'Content-Based': content_based_filtering_enhanced,
+            'Collaborative': collaborative_filtering_enhanced,
+            'Hybrid': smart_hybrid_recommendation
+        }
+    except ImportError as e:
+        print(f"Error importing algorithms: {e}")
+        return None
+
+def create_test_movies(merged_df):
+    """Create test set"""
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+    
+    # Select popular, high-rated movies
+    test_candidates = merged_df[
+        (merged_df[rating_col] >= 7.5) & 
+        (merged_df['No_of_Votes'] >= 100000)
     ]
     
-    print(f"Original ratings: {len(user_ratings)}")
-    print(f"Filtered ratings: {len(user_ratings_filtered)} ({len(user_ratings_filtered)/len(user_ratings)*100:.1f}%)")
-    print(f"Users: {user_ratings_filtered['User_ID'].nunique()}, Movies: {user_ratings_filtered['Movie_ID'].nunique()}")
-    
-    return merged_df, user_ratings_filtered
+    # Sample 15 movies for testing
+    test_movies = test_candidates.sample(min(15, len(test_candidates)))['Series_Title'].tolist()
+    return test_movies
 
-# --- Enhanced SVD Training ---
-def train_svd_model(train_df):
-    """Train optimized SVD model"""
-    if not SURPRISE_AVAILABLE:
-        return None
+def evaluate_algorithm(merged_df, algorithm_func, algorithm_name, test_movies):
+    """Evaluate single algorithm"""
+    rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+    genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
     
-    reader = Reader(rating_scale=(1, 10))
-    data = Dataset.load_from_df(train_df[['User_ID', 'Movie_ID', 'Rating']], reader)
-    trainset = data.build_full_trainset()
+    precision_scores = []
+    recall_scores = []
+    mse_scores = []
+    successful_tests = 0
     
-    # Optimized parameters for better performance
-    svd = SVD(
-        n_epochs=50,      # More training epochs
-        n_factors=150,    # More latent factors
-        lr_all=0.005,     # Lower learning rate for stability
-        reg_all=0.02,     # Regularization to prevent overfitting
-        random_state=RANDOM_STATE
-    )
-    svd.fit(trainset)
-    return svd
+    for test_movie in test_movies:
+        try:
+            # Get baseline movie info
+            movie_info = merged_df[merged_df['Series_Title'] == test_movie]
+            if movie_info.empty:
+                continue
+                
+            baseline = movie_info.iloc[0]
+            baseline_rating = baseline[rating_col]
+            baseline_genres = set()
+            
+            if pd.notna(baseline[genre_col]):
+                baseline_genres = set(g.strip() for g in baseline[genre_col].split(','))
+            
+            # Get recommendations
+            if algorithm_name == 'Hybrid':
+                primary_genre = list(baseline_genres)[0] if baseline_genres else None
+                recs = algorithm_func(merged_df, test_movie, primary_genre, 10)
+            else:
+                if algorithm_name == 'Collaborative':
+                    recs = algorithm_func(merged_df, test_movie, 10)
+                else:  # Content-Based
+                    recs = algorithm_func(merged_df, test_movie, None, 10)
+            
+            if recs is None or recs.empty:
+                continue
+            
+            successful_tests += 1
+            
+            # Calculate relevance
+            relevant_count = 0
+            predicted_ratings = []
+            
+            for _, rec in recs.iterrows():
+                rec_rating = rec[rating_col]
+                rec_genres = set()
+                
+                if pd.notna(rec[genre_col]):
+                    rec_genres = set(g.strip() for g in rec[genre_col].split(','))
+                
+                # Relevance: genre overlap OR similar rating (within 1.5 points)
+                genre_overlap = len(baseline_genres & rec_genres) > 0 if baseline_genres else True
+                rating_similar = abs(rec_rating - baseline_rating) <= 1.5 if pd.notna(rec_rating) else False
+                
+                if genre_overlap or rating_similar:
+                    relevant_count += 1
+                
+                if pd.notna(rec_rating):
+                    predicted_ratings.append(rec_rating)
+            
+            # Calculate metrics
+            precision = relevant_count / len(recs) if len(recs) > 0 else 0
+            precision_scores.append(precision)
+            
+            # Recall (estimate 12 total relevant items)
+            recall = min(relevant_count / 12, 1.0)
+            recall_scores.append(recall)
+            
+            # MSE for rating prediction
+            if predicted_ratings:
+                avg_predicted = np.mean(predicted_ratings)
+                mse_scores.append((avg_predicted - baseline_rating) ** 2)
+            
+        except Exception:
+            continue
+    
+    # Calculate final metrics
+    if successful_tests > 0:
+        avg_precision = np.mean(precision_scores) if precision_scores else 0
+        avg_recall = np.mean(recall_scores) if recall_scores else 0
+        f1_score = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
+        rmse = np.sqrt(np.mean(mse_scores)) if mse_scores else float('inf')
+        
+        return {
+            'precision': avg_precision,
+            'recall': avg_recall,
+            'f1_score': f1_score,
+            'rmse': rmse,
+            'success_rate': successful_tests / len(test_movies)
+        }
+    
+    return None
 
-def predict_svd_collaborative(user_id, movie_id, svd_model, global_mean):
-    """Enhanced SVD prediction with confidence scoring"""
-    if svd_model is None:
-        return global_mean
+def main():
+    """Main evaluation function"""
+    print("Movie Recommendation System Evaluation")
+    print("=" * 50)
     
+    # Load data
     try:
-        prediction = svd_model.predict(user_id, movie_id)
-        # Use prediction confidence - if very uncertain, blend with global mean
-        confidence = 1.0 - abs(prediction.est - global_mean) / 10.0
-        confidence = max(0.1, confidence)  # Minimum confidence
-        
-        return prediction.est * confidence + global_mean * (1 - confidence)
-    except Exception:
-        return global_mean
-
-# --- Enhanced Content-Based Prediction ---
-def predict_content_based(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx, global_mean):
-    if movie_id not in movie_id_to_idx: 
-        return global_mean
+        merged_df = load_data()
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return
     
-    user_ratings = train_df[train_df['User_ID'] == user_id]
-    if user_ratings.empty: 
-        return global_mean
-
-    target_movie_idx = movie_id_to_idx[movie_id]
-    sim_scores = content_sim_matrix[target_movie_idx]
+    # Import algorithms
+    algorithms = import_algorithms()
+    if not algorithms:
+        return
     
-    # Enhanced weighting: prefer high-similarity, high-rated movies
-    numerator, denominator = 0, 0
-    for _, row in user_ratings.iterrows():
-        rated_movie_id = row['Movie_ID']
-        if rated_movie_id in movie_id_to_idx:
-            rated_movie_idx = movie_id_to_idx[rated_movie_id]
-            similarity = sim_scores[rated_movie_idx]
-            if similarity > 0.1:  # Only use reasonably similar movies
-                # Weight by both similarity and rating deviation from mean
-                rating_weight = 1.0 + abs(row['Rating'] - global_mean) / 10.0
-                weight = similarity * rating_weight
-                numerator += weight * row['Rating']
-                denominator += weight
+    # Create test set
+    test_movies = create_test_movies(merged_df)
+    print(f"Testing with {len(test_movies)} movies")
+    print()
     
-    if denominator > 0:
-        predicted = numerator / denominator
-        # Blend with global mean for stability
-        return 0.8 * predicted + 0.2 * global_mean
-    return global_mean
-
-# --- Evaluation ---
-if __name__ == "__main__":
-    print("Loading and preparing data with optimization...")
-    merged_df, user_ratings = load_and_prepare_data()
-    
-    # Stratified split to ensure rating distribution balance
-    train_df, test_df = train_test_split(
-        user_ratings, 
-        test_size=TEST_SIZE, 
-        random_state=RANDOM_STATE,
-        stratify=pd.cut(user_ratings['Rating'], bins=5, labels=False)  # Stratify by rating
-    )
-    global_mean_rating = train_df['Rating'].mean()
-    print(f"Global mean rating: {global_mean_rating:.2f}")
-
-    print("Building enhanced content-based similarity matrix...")
-    # Enhanced feature weighting
-    w_overview, w_genre, w_title, w_director, w_stars = 5, 4, 3, 3, 2
-    soup = (
-        (merged_df['Overview'].fillna('') + ' ') * w_overview +
-        (merged_df['Genre'].fillna('') + ' ') * w_genre +
-        (merged_df['Series_Title'].fillna('') + ' ') * w_title +
-        (merged_df['Director'].fillna('') + ' ') * w_director +
-        (merged_df['Stars'].fillna('') + ' ') * w_stars
-    )
-
-    # Optimized TF-IDF parameters
-    tfidf = TfidfVectorizer(
-        stop_words='english', 
-        min_df=3, 
-        max_df=0.7,
-        ngram_range=(1, 2),  # Include bigrams
-        max_features=10000   # Limit features for performance
-    )
-    tfidf_matrix = tfidf.fit_transform(soup)
-    content_sim_matrix = cosine_similarity(tfidf_matrix, tfidf_matrix)
-    
-    merged_df_reset = merged_df.reset_index(drop=True)
-    movie_id_to_idx = {mid: i for i, mid in enumerate(merged_df_reset['Movie_ID'])}
-
-    # Train SVD model
-    if SURPRISE_AVAILABLE:
-        print("Training optimized SVD collaborative filtering model...")
-        svd_model = train_svd_model(train_df)
-        print(f"SVD model trained on {len(train_df)} ratings")
-    else:
-        print("Skipping SVD model training (Surprise not available)")
-        svd_model = None
-
-    print("Evaluating models...")
-    predictions = defaultdict(list)
-    true_ratings = list(test_df['Rating'])
-
-    for _, row in test_df.iterrows():
-        user_id, movie_id = row['User_ID'], row['Movie_ID']
-        
-        # SVD Collaborative Filtering
-        pred_svd = predict_svd_collaborative(user_id, movie_id, svd_model, global_mean_rating)
-        predictions['collab'].append(pred_svd)
-        
-        # Enhanced Content-Based
-        pred_cb = predict_content_based(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx, global_mean_rating)
-        predictions['content'].append(pred_cb)
-        
-        # Smart Hybrid with adaptive weighting
-        user_rating_count = len(train_df[train_df['User_ID'] == user_id])
-        if user_rating_count < 10:  # New users: favor content-based
-            hybrid_pred = 0.3 * pred_svd + 0.7 * pred_cb
-        else:  # Established users: favor collaborative
-            hybrid_pred = 0.75 * pred_svd + 0.25 * pred_cb
-        
-        predictions['hybrid'].append(hybrid_pred)
-    
-    print(f"\n--- Evaluation Results ---\n")
+    # Evaluate each algorithm
     results = {}
-    y_true_cls = [1 if r >= RATING_THRESHOLD else 0 for r in true_ratings]
+    for alg_name, alg_func in algorithms.items():
+        print(f"Evaluating {alg_name}...")
+        result = evaluate_algorithm(merged_df, alg_func, alg_name, test_movies)
+        if result:
+            results[alg_name] = result
+        print(f"  Completed: {result['success_rate']*100:.0f}% success rate" if result else "  Failed")
     
-    # Check class balance
-    positive_ratio = np.mean(y_true_cls)
-    print(f"Class distribution: {positive_ratio:.1%} positive, {1-positive_ratio:.1%} negative")
+    # Display results
+    print("\n" + "=" * 70)
+    print("EVALUATION RESULTS")
+    print("=" * 70)
     
-    for model_name in ['content', 'collab', 'hybrid']:
-        y_pred_reg = np.clip(predictions[model_name], 1, 10)
-        y_pred_cls = [1 if r >= RATING_THRESHOLD else 0 for r in y_pred_reg]
+    if results:
+        # Header
+        print(f"{'Algorithm':<15} {'Precision':<10} {'Recall':<8} {'F1-Score':<9} {'RMSE':<8} {'Success%':<9}")
+        print("-" * 70)
         
-        results[model_name] = {
-            'report': classification_report(y_true_cls, y_pred_cls, target_names=['negative', 'positive'], zero_division=0),
-            'accuracy': accuracy_score(y_true_cls, y_pred_cls),
-            'rmse': np.sqrt(mean_squared_error(true_ratings, y_pred_reg)),
-            'precision': precision_score(y_true_cls, y_pred_cls, average='weighted', zero_division=0),
-            'recall': recall_score(y_true_cls, y_pred_cls, average='weighted', zero_division=0),
-            'mae': np.mean(np.abs(np.array(true_ratings) - np.array(y_pred_reg))),
-            'f1': f1_score(y_true_cls, y_pred_cls, average='weighted', zero_division=0)
-        }
+        # Results
+        for alg_name, metrics in results.items():
+            precision = metrics['precision']
+            recall = metrics['recall']
+            f1 = metrics['f1_score']
+            rmse = metrics['rmse']
+            success = metrics['success_rate'] * 100
+            
+            rmse_str = f"{rmse:.3f}" if rmse != float('inf') else "N/A"
+            print(f"{alg_name:<15} {precision:<10.3f} {recall:<8.3f} {f1:<9.3f} {rmse_str:<8} {success:<9.1f}")
         
-        title = model_name.replace('content', 'Content-Based').replace('collab', 'Collaborative').replace('hybrid', 'Hybrid')
-        print(f"Model: {title}")
-        print(f"Accuracy: {results[model_name]['accuracy']:.3f}")
-        print(f"RMSE: {results[model_name]['rmse']:.3f}")
-        print(f"MAE: {results[model_name]['mae']:.3f}")
-        print(f"{results[model_name]['report']}")
-        print(f"{'-'*60}")
+        # Find best algorithm
+        best_alg = max(results.items(), key=lambda x: x[1]['f1_score'])
+        print(f"\nBest Overall: {best_alg[0]} (F1-Score: {best_alg[1]['f1_score']:.3f})")
+        
+    else:
+        print("No results to display - all algorithms failed")
 
-    print("\n--- Performance Comparison ---\n")
-    summary_df = pd.DataFrame({
-        "Method": ["Content-Based", "Collaborative (SVD)", "Smart Hybrid"],
-        "Accuracy": [res['accuracy'] for res in results.values()],
-        "Precision": [res['precision'] for res in results.values()],
-        "Recall": [res['recall'] for res in results.values()],
-        "RMSE": [res['rmse'] for res in results.values()],
-        "MAE": [res['mae'] for res in results.values()]
-    })
-    
-    print(summary_df.to_string(
-        index=False, 
-        formatters={
-            'Accuracy': '{:.3f}'.format,
-            'Precision': '{:.3f}'.format, 
-            'Recall': '{:.3f}'.format, 
-            'RMSE': '{:.3f}'.format,
-            'MAE': '{:.3f}'.format
-        }
-    ))
-    
-  
+if __name__ == "__main__":
+    main()

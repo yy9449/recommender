@@ -28,7 +28,7 @@ st.markdown("---")
 # =========================
 @st.cache_data
 def load_csv_from_github(file_url, file_name):
-    """Load CSV file from GitHub repository - silent version"""
+    """Load CSV file from GitHub repository"""
     try:
         response = requests.get(file_url, timeout=30)
         response.raise_for_status()
@@ -37,7 +37,7 @@ def load_csv_from_github(file_url, file_name):
         csv_content = io.StringIO(response.text)
         df = pd.read_csv(csv_content)
         
-        # Silent success - no st.success message
+        st.success(f"✅ Successfully loaded {file_name} ({len(df)} rows)")
         return df
         
     except requests.exceptions.RequestException as e:
@@ -52,7 +52,7 @@ def load_csv_from_github(file_url, file_name):
 
 @st.cache_data
 def load_and_prepare_data():
-    """Load CSVs from GitHub and prepare data for recommendation algorithms - silent version"""
+    """Load CSVs from GitHub and prepare data for recommendation algorithms"""
     
     # GitHub raw file URLs - replace with your actual repository URLs
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
@@ -62,22 +62,33 @@ def load_and_prepare_data():
     imdb_url = github_base_url + "imdb_top_1000.csv"
     user_ratings_url = github_base_url + "user_movie_rating.csv"
     
-    # Silent loading - show minimal progress info
-    with st.spinner("Loading datasets..."):
+    st.info("📥 Loading datasets from GitHub repository...")
+    
+    # Create columns for loading progress
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.write("**Loading movies.csv...**")
         movies_df = load_csv_from_github(movies_url, "movies.csv")
+    
+    with col2:
+        st.write("**Loading imdb_top_1000.csv...**")
         imdb_df = load_csv_from_github(imdb_url, "imdb_top_1000.csv")
+    
+    with col3:
+        st.write("**Loading user_movie_rating.csv...**")
         user_ratings_df = load_csv_from_github(user_ratings_url, "user_movie_rating.csv")
     
     # Check if required files loaded successfully
     if movies_df is None or imdb_df is None:
         return None, None, "❌ Required CSV files (movies.csv, imdb_top_1000.csv) could not be loaded from GitHub"
     
-    # Store user ratings in session state for other functions to access - silent
+    # Store user ratings in session state for other functions to access
     if user_ratings_df is not None:
         st.session_state['user_ratings_df'] = user_ratings_df
-        # Silent success - no message
+        st.success("✅ User ratings data loaded and available for collaborative filtering")
     else:
-        # Only show warning if explicitly needed
+        st.warning("⚠️ user_movie_rating.csv not available - will use synthetic user data")
         if 'user_ratings_df' in st.session_state:
             del st.session_state['user_ratings_df']
     
@@ -89,7 +100,7 @@ def load_and_prepare_data():
         # Check if movies.csv has Movie_ID
         if 'Movie_ID' not in movies_df.columns:
             movies_df['Movie_ID'] = range(len(movies_df))
-            # Silent addition - no info message
+            st.info("ℹ️ Added Movie_ID column to movies dataset")
         
         # Merge on Series_Title
         merged_df = pd.merge(movies_df, imdb_df, on="Series_Title", how="inner")
@@ -100,7 +111,8 @@ def load_and_prepare_data():
             # Re-merge to preserve Movie_ID
             merged_df = pd.merge(movies_df[['Movie_ID', 'Series_Title']], merged_df, on="Series_Title", how="inner")
         
-        # Silent success - no success message
+        st.success(f"✅ Successfully merged datasets: {len(merged_df)} movies available")
+        
         return merged_df, user_ratings_df, None
         
     except Exception as e:
@@ -109,7 +121,7 @@ def load_and_prepare_data():
 # Alternative: Try local files if GitHub fails
 @st.cache_data
 def load_local_fallback():
-    """Fallback to load local files if GitHub loading fails - silent version"""
+    """Fallback to load local files if GitHub loading fails"""
     try:
         import os
         
@@ -139,7 +151,7 @@ def load_local_fallback():
         if movies_df is None or imdb_df is None:
             return None, None, "Required CSV files not found locally either"
         
-        # Store user ratings in session state - silent
+        # Store user ratings in session state
         if user_ratings_df is not None:
             st.session_state['user_ratings_df'] = user_ratings_df
         
@@ -293,8 +305,7 @@ def main():
             """)
             st.stop()
     
-    # Show minimal success message only
-    st.success("🎉 Ready to recommend!")
+    st.success("🎉 All datasets loaded successfully!")
     
     # Show data summary
     with st.expander("📊 Dataset Summary", expanded=False):
@@ -386,11 +397,11 @@ def main():
     # Number of recommendations
     top_n = st.sidebar.slider("📊 Number of Recommendations:", 3, 15, 8)
     
-    # Show data source info quietly in sidebar
+    # Show data source info
     if user_ratings_available:
-        st.sidebar.success("💾 Real user data available")
+        st.sidebar.success("💾 Using real user rating data")
     else:
-        st.sidebar.info("🤖 Using synthetic profiles")
+        st.sidebar.info("🤖 Using synthetic user profiles")
     
     # Generate button
     if st.sidebar.button("🚀 Generate Recommendations", type="primary"):
@@ -410,8 +421,7 @@ def main():
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
             else:  # Hybrid
-                results = smart_hybrid_recommendation(user_id=1, movie_title=movie_title, genre_input=genre_input, 
-                                    df=merged_df, ratings_df=user_ratings_df, top_n=top_n)
+                results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
             
             # Display results
             if results is not None and not results.empty:

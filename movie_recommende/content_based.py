@@ -1,96 +1,149 @@
 import pandas as pd
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import linear_kernel, cosine_similarity
-from sklearn.preprocessing import MinMaxScaler
-import warnings
+import re
+from difflib import get_close_matches
+import streamlit as st
 
-warnings.filterwarnings('ignore')
-
-# =====================================================================================
-# == Functions for Streamlit App (main.py)
-# =====================================================================================
-
-def content_based_filtering_enhanced(movie_title, genre_input, df, top_n=10, genre_weight=0.3):
-    """
-    Generates movie recommendations based on content similarity for the Streamlit app.
-    """
-    df_copy = df.copy()
-    df_copy.fillna('', inplace=True)
-    df_copy['soup'] = df_copy['Genre'] + ' ' + df_copy['Overview'] + ' ' + df_copy['Director'] + ' ' + df_copy['Stars']
-
-    tfidf = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = tfidf.fit_transform(df_copy['soup'])
-    cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
-    indices = pd.Series(df_copy.index, index=df_copy['Series_Title']).drop_duplicates()
-
-    if movie_title not in indices:
-        return pd.DataFrame()
-
-    idx = indices[movie_title]
-    sim_scores = list(enumerate(cosine_sim[idx]))
-
-    if genre_input:
-        genre_col = 'Genre_x' if 'Genre_x' in df_copy.columns else 'Genre'
-        for i, score in sim_scores:
-            if genre_input.lower() in str(df_copy.iloc[i][genre_col]).lower():
-                sim_scores[i] = (i, score + genre_weight)
-
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-    sim_scores = sim_scores[1:top_n+1]
-    movie_indices = [i[0] for i in sim_scores]
-    return df_copy.iloc[movie_indices]
-
-# =====================================================================================
-# == Functions for Offline Evaluation (evaluate_recommendations.py)
-# =====================================================================================
-
-def create_content_features(df):
-    """
-    Pre-computes TF-IDF matrix, cosine similarity, and indices for evaluation.
-    """
-    df_copy = df.copy()
-    df_copy.fillna('', inplace=True)
-    df_copy['soup'] = df_copy['Genre'] + ' ' + df_copy['Overview'] + ' ' + df_copy['Director'] + ' ' + df_copy['Stars']
+def safe_convert_to_numeric(value, default=None):
+    """Safely convert a value to numeric, handling strings and NaN"""
+    if pd.isna(value):
+        return default
     
-    tfidf = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = tfidf.fit_transform(df_copy['soup'])
-    cosine_sim = linear_kernel(tfidf_matrix, tfidf_matrix)
-    indices = pd.Series(df_copy.index, index=df_copy['Movie_ID']).drop_duplicates()
+    if isinstance(value, (int, float)):
+        return float(value)
     
-    return tfidf_matrix, cosine_sim, indices
+    if isinstance(value, str):
+        # Remove any non-numeric characters except decimal point
+        clean_value = re.sub(r'[^\d.-]', '', str(value))
+        try:
+            return float(clean_value) if clean_value else default
+        except (ValueError, TypeError):
+            return default
+    
+    return default
 
-def predict_content_ratings(user_id, train_df, movies_df, tfidf_matrix, cosine_sim, indices):
-    """
-    Predicts movie ratings for a user based on their past ratings for the evaluation script.
-    Returns a dictionary of {movie_id: predicted_rating}.
-    """
-    user_ratings = train_df[train_df['User_ID'] == user_id]
-    if user_ratings.empty:
-        return {}
+def find_similar_titles(input_title, titles_list, cutoff=0.6):
+    """Enhanced fuzzy matching for movie titles"""
+    if not input_title or not titles_list:
+        return []
+    
+    input_lower = input_title.lower().strip()
+    
+    # Direct match
+    exact_matches = [title for title in titles_list if title.lower() == input_lower]
+    if exact_matches:
+        return exact_matches
+    
+    # Partial match
+    partial_matches = []
+    for title in titles_list:
+        title_lower = title.lower()
+        if input_lower in title_lower:
+            partial_matches.append((title, len(input_lower) / len(title_lower)))
+        elif title_lower in input_lower:
+            partial_matches.append((title, len(title_lower) / len(input_lower)))
+    
+    if partial_matches:
+        partial_matches.sort(key=lambda x: x[1], reverse=True)
+        return [match[0] for match in partial_matches[:3]]
+    
+    # Fuzzy match
+    matches = get_close_matches(input_title, titles_list, n=5, cutoff=cutoff)
+    return matches
 
-    # Get the indices of movies the user has rated
-    rated_movie_indices = [indices[movie_id] for movie_id in user_ratings['Movie_ID'] if movie_id in indices]
+@st.cache_data
+def create_content_features(merged_df):
+    """Create enhanced content-based features matrix"""
+    features = []
     
-    # Create a user profile: a weighted average of TF-IDF vectors of movies they rated
-    user_profile = np.dot(user_ratings['Rating'].values, tfidf_matrix[rated_movie_indices])
+    for _, movie in merged_df.iterrows():
+        feature_vector = []
+        
+        # Genre features (one-hot encoded)
+        all_genres = ['Action', 'Adventure', 'Animation', 'Biography', 'Comedy', 'Crime', 
+                     'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 
+                     'Mystery', 'Romance', 'Sci-Fi', 'Sport', 'Thriller', 'War', 'Western']
+        
+        movie_genres = []
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        if pd.notna(movie[genre_col]):
+            movie_genres = [g.strip() for g in movie[genre_col].split(',')]
+        
+        # One-hot encode genres
+        genre_features = [1 if genre in movie_genres else 0 for genre in all_genres]
+        feature_vector.extend(genre_features)
+        
+        # Director feature (simplified)
+        director_col = 'Director' if 'Director' in merged_df.columns else 'Director'
+        director_hash = hash(str(movie.get(director_col, 'unknown'))) % 100
+        feature_vector.append(director_hash)
+        
+        # Year feature (normalized)
+        year_col = 'Released_Year' if 'Released_Year' in merged_df.columns else 'Year'
+        year = safe_convert_to_numeric(movie.get(year_col), 2000)
+        if year and 1900 <= year <= 2025:
+            normalized_year = (year - 1920) / (2025 - 1920)
+        else:
+            normalized_year = 0.5
+        feature_vector.append(normalized_year)
+        
+        # Runtime feature (normalized)
+        runtime_col = 'Runtime' if 'Runtime' in merged_df.columns else 'Runtime'
+        runtime = safe_convert_to_numeric(movie.get(runtime_col), 120)
+        if runtime and runtime > 0:
+            normalized_runtime = min(runtime / 200.0, 1.0)
+        else:
+            normalized_runtime = 0.6
+        feature_vector.append(normalized_runtime)
+        
+        # Rating feature
+        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+        rating = safe_convert_to_numeric(movie.get(rating_col), 7.0)
+        if rating and 0 <= rating <= 10:
+            normalized_rating = rating / 10.0
+        else:
+            normalized_rating = 0.7
+        feature_vector.append(normalized_rating)
+        
+        features.append(feature_vector)
     
-    # FIX: Convert the resulting numpy.matrix to a standard numpy.ndarray
-    user_profile = np.asarray(user_profile)
-    
-    # Reshape the user profile for the similarity calculation
-    user_profile = user_profile.reshape(1, -1)
+    return np.array(features)
 
-    # Calculate cosine similarity between the user profile and all movies
-    sim_scores = cosine_similarity(user_profile, tfidf_matrix).flatten()
+@st.cache_data
+def content_based_filtering_enhanced(merged_df, target_movie=None, genre=None, top_n=5):
+    """Enhanced content-based filtering"""
+    if target_movie:
+        similar_titles = find_similar_titles(target_movie, merged_df['Series_Title'].tolist())
+        if not similar_titles:
+            return None
+        
+        target_title = similar_titles[0]
+        target_idx = merged_df[merged_df['Series_Title'] == target_title].index[0]
+        
+        content_features = create_content_features(merged_df)
+        target_features = content_features[merged_df.index.get_loc(target_idx)].reshape(1, -1)
+        similarities = cosine_similarity(target_features, content_features).flatten()
+        similar_indices = np.argsort(-similarities)[1:top_n+1]
+        
+        result_df = merged_df.iloc[similar_indices]
+        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        return result_df[['Series_Title', genre_col, rating_col]]
     
-    # Scale scores to a 1-10 rating
-    scaler = MinMaxScaler(feature_range=(1, 10))
-    scaled_scores = scaler.fit_transform(sim_scores.reshape(-1, 1)).flatten()
+    elif genre:
+        genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else 'Genre'
+        rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else 'Rating'
+        
+        genre_corpus = merged_df[genre_col].fillna('').tolist()
+        tfidf = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+        tfidf_matrix = tfidf.fit_transform(genre_corpus)
+        query_vector = tfidf.transform([genre])
+        similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
+        top_indices = np.argsort(-similarities)[:top_n]
+        
+        result_df = merged_df.iloc[top_indices]
+        return result_df[['Series_Title', genre_col, rating_col]]
     
-    # Create a dictionary of movie_id to predicted rating
-    movie_ids = movies_df['Movie_ID'].iloc[indices.values]
-    predictions = {movie_id: score for movie_id, score in zip(movie_ids, scaled_scores)}
-    
-    return predictions
-
+    return None
