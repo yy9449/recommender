@@ -1,11 +1,10 @@
 # main.py
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import warnings
 import requests
 import io
-import os
 
 # --- Correctly Integrated Algorithm Imports ---
 from content_based import content_based_filtering_enhanced
@@ -25,31 +24,36 @@ st.title("🎬 Movie Recommendation System")
 # =========================
 @st.cache_data
 def load_and_prepare_data():
-    """Loads and merges data from GitHub with a local fallback, handling column name changes."""
+    """
+    Loads and merges data from GitHub with a local fallback.
+    This function now enforces a DEFINITIVE merge order to ensure column names are always consistent.
+    """
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
     try:
-        movies_df = pd.read_csv(github_base_url + "movies.csv")
+        # Attempt to load from GitHub
         imdb_df = pd.read_csv(github_base_url + "imdb_top_1000.csv")
+        movies_df = pd.read_csv(github_base_url + "movies.csv")
         user_ratings_df = pd.read_csv(github_base_url + "user_movie_rating.csv")
         st.session_state['data_source'] = "GitHub"
     except Exception:
         st.warning("⚠️ GitHub loading failed. Attempting to load local files...")
         try:
-            movies_df = pd.read_csv("movies.csv")
+            # Fallback to local files
             imdb_df = pd.read_csv("imdb_top_1000.csv")
+            movies_df = pd.read_csv("movies.csv")
             user_ratings_df = pd.read_csv("user_movie_rating.csv")
             st.session_state['data_source'] = "Local Files"
         except FileNotFoundError:
-            st.error("❌ CRITICAL ERROR: Required CSV files not found locally. App cannot run.")
+            st.error("❌ CRITICAL ERROR: Required CSV files not found. App cannot run.")
             return None, None
             
     # --- The CRITICAL Merge Step ---
-    # We merge imdb (left) with movies (right). Pandas will add '_x' and '_y' to overlapping columns.
-    # Our algorithms have been fixed to use the '_x' columns from the richer imdb_df.
+    # We will ALWAYS merge imdb_df (left) with movies_df (right).
+    # This ensures the rich data from imdb_df gets the '_x' suffix, which the algorithms will now use.
     merged_df = pd.merge(imdb_df, movies_df, on="Series_Title", how="left", suffixes=('_x', '_y'))
 
-    # Ensure a consistent Movie_ID column
+    # Clean up and ensure a consistent Movie_ID
     if 'Movie_ID' not in merged_df.columns:
         merged_df['Movie_ID'] = merged_df.index
     
@@ -66,27 +70,22 @@ def main():
 
     st.success(f"🎉 Datasets loaded from {st.session_state.get('data_source', 'source')}. Ready to recommend!")
 
-    # --- Sidebar for User Input ---
     with st.sidebar:
         st.header("🎯 Recommendation Settings")
-
         movie_titles = sorted(merged_df['Series_Title'].dropna().unique())
         movie_title = st.selectbox("1. Select a Movie:", [""] + movie_titles)
         
-        # Use the correct 'Genre_x' column
-        genre_col = 'Genre_x'
+        genre_col = 'Genre_x' # DEFINITIVE column name
         all_genres = sorted(merged_df[genre_col].dropna().str.split(', ').explode().unique())
         genre_input = st.selectbox("2. Filter by Genre (Optional):", [""] + all_genres)
         
         algorithm = st.selectbox("3. Choose Algorithm:", ["Hybrid", "Content-Based", "Collaborative"])
         top_n = st.slider("4. Number of Recommendations:", 5, 20, 10)
-        
         generate_button = st.button("🚀 Generate Recommendations", type="primary")
 
-    # --- Recommendation and Display Logic ---
     if generate_button:
         if not movie_title:
-            st.error("❌ Please select a movie from the dropdown to get recommendations.")
+            st.error("❌ Please select a movie to get recommendations.")
             return
 
         with st.spinner("Finding movies you'll love..."):
