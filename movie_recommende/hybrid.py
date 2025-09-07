@@ -9,23 +9,22 @@ import streamlit as st
 
 # --- Your defined recommendation weights ---
 ALPHA = 0.4  # Content-based
-BETA = 0.4   # Collaborative (proxied by content for this real-time model)
+BETA = 0.4   # Collaborative
 GAMMA = 0.1  # Popularity
 DELTA = 0.1  # Recency
 
 def _calculate_popularity(df: pd.DataFrame) -> pd.Series:
-    """Calculates a popularity score using the correct column names."""
     log_votes = np.log1p(df['No_of_Votes'].fillna(0))
     rating = df['IMDB_Rating'].fillna(df['IMDB_Rating'].mean())
     return rating * log_votes
 
 def _calculate_recency(df: pd.DataFrame) -> pd.Series:
-    """Calculates a recency score using the correct 'Released_Year' column."""
     current_year = pd.to_datetime('today').year
-    decay_rate = 0.98
-    age = current_year - pd.to_numeric(df['Released_Year'], errors='coerce').fillna(df['Released_Year'].mode()[0])
+    # Convert Released_Year to numeric, coercing errors to NaN, then fill NaN
+    years = pd.to_numeric(df['Released_Year'], errors='coerce')
+    age = current_year - years.fillna(years.mode()[0])
     age = age.clip(lower=0)
-    return decay_rate ** age
+    return (0.98 ** age)
 
 @st.cache_data
 def smart_hybrid_recommendation(
@@ -35,7 +34,7 @@ def smart_hybrid_recommendation(
     top_n: int = 10
 ):
     """
-    Generates hybrid recommendations blending all four strategies with corrected column names.
+    Generates hybrid recommendations using the DEFINITIVE column names from main.py.
     """
     if target_movie not in merged_df['Series_Title'].values:
         return pd.DataFrame()
@@ -52,7 +51,7 @@ def smart_hybrid_recommendation(
     
     idx = merged_df[merged_df['Series_Title'] == target_movie].index[0]
     content_scores = cosine_sim[idx]
-    collaborative_scores = content_scores # Using content as a proxy for the collaborative signal
+    collaborative_scores = content_scores # Using content as a proxy
 
     # --- 2. Popularity & Recency Scores ---
     popularity_scores = _calculate_popularity(merged_df)
