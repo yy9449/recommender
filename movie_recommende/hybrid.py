@@ -2,8 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from content_based import content_based_filtering_enhanced, predict_content_ratings
-from collaborative import collaborative_svd, collaborative_filtering_enhanced
-from collaborative import collaborative_svd
+from collaborative import collaborative_filtering_enhanced
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -14,21 +13,21 @@ warnings.filterwarnings('ignore')
 
 def smart_hybrid_recommendation(user_id, movie_title, genre_input, df, ratings_df, top_n=10, content_weight=0.5, collab_weight=0.5):
     """
-    Generates hybrid recommendations by combining content-based and collaborative (SVD/KNN) methods.
+    Generates hybrid recommendations by combining content-based and collaborative (KNN) methods.
     """
 
     # 1. Content-Based Recommendations
     content_recs = content_based_filtering_enhanced(movie_title, genre_input, df, top_n=len(df), genre_weight=0.3)
     if content_recs.empty:
-        # fallback to pure collaborative
-        return collaborative_svd(df, movie_title, top_n) or collaborative_filtering_enhanced(df, movie_title, top_n)
+        # fallback to collaborative only
+        return collaborative_filtering_enhanced(df, movie_title, top_n)
 
     content_recs['content_score'] = range(len(content_recs), 0, -1)
 
-    # 2. Collaborative Recommendations (SVD, fallback to KNN)
-    collab_recs = collaborative_svd(df, movie_title, top_n=len(df))
+    # 2. Collaborative Recommendations (KNN)
+    collab_recs = collaborative_filtering_enhanced(df, movie_title, top_n=len(df))
     if collab_recs is None or collab_recs.empty:
-        collab_recs = collaborative_filtering_enhanced(df, movie_title, top_n=len(df))
+        return content_recs.head(top_n)  # fallback to content-only
 
     collab_recs['collab_score'] = range(len(collab_recs), 0, -1)
 
@@ -56,10 +55,9 @@ def smart_hybrid_recommendation(user_id, movie_title, genre_input, df, ratings_d
 # == Functions for Offline Evaluation (evaluate_recommendations.py)
 # =====================================================================================
 
-def predict_hybrid_ratings(user_id, movie_id, train_df, movies_df, tfidf_matrix, cosine_sim, indices, svd_model=None, content_weight=0.5, collab_weight=0.5):
+def predict_hybrid_ratings(user_id, movie_id, train_df, movies_df, tfidf_matrix, cosine_sim, indices, content_weight=0.5, collab_weight=0.5):
     """
-    Predicts a single movie rating for a user by combining content and collaborative methods.
-    For evaluation only.
+    Predicts a single movie rating for a user by combining content and collaborative (KNN) methods.
     """
 
     # 1. Content-Based Prediction
@@ -73,13 +71,8 @@ def predict_hybrid_ratings(user_id, movie_id, train_df, movies_df, tfidf_matrix,
                        if user_ratings['Rating'].sum() > 0 else 0
         content_pred_score = weighted_sim * 9 + 1  # scale 0–1 → 1–10
 
-    # 2. Collaborative Prediction (fallback since no direct SVD model is passed)
-    collab_pred_score = 5.0  # neutral default
-    if svd_model:
-        try:
-            collab_pred_score = svd_model.predict(user_id, movie_id).est
-        except:
-            pass
+    # 2. Collaborative Prediction (fallback: neutral since KNN doesn’t predict rating easily)
+    collab_pred_score = 5.0  
 
     # 3. Hybrid Weighted Score
     final_score = (content_pred_score * content_weight) + (collab_pred_score * collab_weight)
