@@ -25,7 +25,6 @@ def load_user_ratings():
 
 
 def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
-    """Build user-item matrix for collaborative filtering"""
     if ratings_df is None or ratings_df.empty:
         return None
     ratings = ratings_df[ratings_df['Movie_ID'].isin(movie_ids)].copy()
@@ -36,17 +35,15 @@ def _build_user_item_matrix(ratings_df: pd.DataFrame, movie_ids: np.ndarray):
 
 
 def _fit_item_knn(user_item: pd.DataFrame):
-    """Fit KNN model on item-item similarity (transposed user-item matrix)"""
     if user_item is None or user_item.empty:
         return None
-    item_vectors = user_item.fillna(0.0).T  # Transpose to get items as rows
+    item_vectors = user_item.fillna(0.0).T
     model = NearestNeighbors(metric='cosine', algorithm='brute')
     model.fit(item_vectors)
     return model, item_vectors
 
 
 def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
-    """Find k nearest items to target movie"""
     if model is None or item_vectors is None or target_movie_id not in item_vectors.index:
         return {}
     idx = item_vectors.index.get_loc(target_movie_id)
@@ -62,7 +59,6 @@ def _nearest_items(model, item_vectors, target_movie_id: int, k: int = 10):
 
 @st.cache_data
 def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8, k_neighbors: int = 20):
-    """Pure KNN-based collaborative filtering"""
     if target_movie is None or not isinstance(target_movie, str) or target_movie.strip() == '':
         return None
 
@@ -81,9 +77,6 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
         target_movie_id = int(title_to_id[target_movie])
 
     ratings_df = load_user_ratings()
-    if ratings_df is None:
-        return None
-        
     user_item = _build_user_item_matrix(ratings_df, merged_df['Movie_ID'].values)
     model, item_vectors = _fit_item_knn(user_item)
     neighbors = _nearest_items(model, item_vectors, target_movie_id, k=k_neighbors)
@@ -94,9 +87,7 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
     sorted_pairs = sorted(neighbors.items(), key=lambda x: x[1], reverse=True)[:top_n]
     sorted_ids = [mid for mid, sim in sorted_pairs]
     sim_by_id = {mid: sim for mid, sim in sorted_pairs}
-    
     result = merged_df[merged_df['Movie_ID'].isin(sorted_ids)][['Series_Title', 'Movie_ID']]
-    
     # Keep original rating/genre columns if present
     rating_col = 'IMDB_Rating' if 'IMDB_Rating' in merged_df.columns else ('Rating' if 'Rating' in merged_df.columns else None)
     genre_col = 'Genre_y' if 'Genre_y' in merged_df.columns else ('Genre' if 'Genre' in merged_df.columns else None)
@@ -115,38 +106,12 @@ def collaborative_knn(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8
 
 @st.cache_data
 def collaborative_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str, top_n: int = 8):
-    """Enhanced collaborative filtering using optimized KNN approach"""
+    # Minimal wrapper to keep existing app API; uses pure KNN ranking
     return collaborative_knn(merged_df, target_movie, top_n=top_n)
-
-
-def predict_content_based(user_id, movie_id, train_df, content_sim_matrix, movie_id_to_idx, global_mean):
-    """Predict rating using content-based similarity for evaluation purposes"""
-    if movie_id not in movie_id_to_idx: 
-        return global_mean
-        
-    user_ratings = train_df[train_df['User_ID'] == user_id]
-    if user_ratings.empty: 
-        return global_mean
-
-    target_movie_idx = movie_id_to_idx[movie_id]
-    sim_scores = content_sim_matrix[target_movie_idx]
-    
-    numerator, denominator = 0, 0
-    for _, row in user_ratings.iterrows():
-        rated_movie_id = row['Movie_ID']
-        if rated_movie_id in movie_id_to_idx:
-            rated_movie_idx = movie_id_to_idx[rated_movie_id]
-            similarity = sim_scores[rated_movie_idx]
-            if similarity > 0:
-                numerator += similarity * row['Rating']
-                denominator += similarity
-    
-    return numerator / denominator if denominator > 0 else global_mean
 
 
 @st.cache_data
 def diagnose_data_linking(merged_df: pd.DataFrame):
-    """Diagnose data linking issues for debugging"""
     issues = {}
     issues['has_movie_id'] = 'Movie_ID' in merged_df.columns
     issues['unique_titles'] = merged_df['Series_Title'].nunique()
