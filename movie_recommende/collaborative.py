@@ -1,46 +1,125 @@
-# collaborative.py
-
-import pandas as pd
-import numpy as np
-from sklearn.neighbors import NearestNeighbors
+# main.py
 import streamlit as st
+import pandas as pd
+import warnings
 
+# --- Corrected Imports ---
+# These now match the function definitions in your algorithm files.
+from content_based import content_based_filtering_enhanced
+from collaborative import collaborative_filtering_enhanced
+from hybrid import smart_hybrid_recommendation
+
+warnings.filterwarnings('ignore')
+
+# --- Streamlit Page Configuration ---
+st.set_page_config(
+    page_title="🎬 Movie Recommender",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- Data Loading ---
 @st.cache_data
-def collaborative_filtering_enhanced(merged_df: pd.DataFrame, user_ratings_df: pd.DataFrame, target_movie: str, top_n: int = 10):
+def load_data():
     """
-    Generates movie recommendations using an item-based K-Nearest Neighbors (KNN) model.
-    This function now explicitly requires the user_ratings_df to be passed as an argument.
+    Loads, merges, and preprocesses the movie data from local CSV files.
     """
-    # Step 1: Validate inputs
-    if user_ratings_df is None or user_ratings_df.empty:
-        st.warning("User ratings data is not available. Cannot perform collaborative filtering.")
-        return pd.DataFrame()
+    try:
+        # Load the datasets
+        imdb_df = pd.read_csv("imdb_top_1000.csv")
+        movies_df = pd.read_csv("movies.csv")
+        user_ratings_df = pd.read_csv("user_movie_rating.csv")
 
-    target_movie_id_series = merged_df[merged_df['Series_Title'] == target_movie]['Movie_ID']
-    if target_movie_id_series.empty:
-        return pd.DataFrame()
-    target_movie_id = target_movie_id_series.iloc[0]
+        # Merge IMDb and movies data
+        # Renaming to avoid column conflicts and ensure clarity
+        imdb_df.rename(columns={'Series_Title': 'Title'}, inplace=True)
+        movies_df.rename(columns={'Series_Title': 'Title'}, inplace=True)
+        
+        # A simple merge based on title
+        merged_df = pd.merge(imdb_df, movies_df, on="Title", how="left")
 
-    # Step 2: Create the user-item matrix from the provided ratings data
-    user_item_matrix = user_ratings_df.pivot_table(index='Movie_ID', columns='User_ID', values='Rating').fillna(0)
-    
-    if target_movie_id not in user_item_matrix.index:
-        st.warning(f"No rating data found for '{target_movie}' to use for collaborative filtering.")
-        return pd.DataFrame()
+        # Add a unique Movie_ID if it doesn't exist from the merge
+        if 'Movie_ID' not in merged_df.columns:
+            merged_df['Movie_ID'] = range(len(merged_df))
+            
+        # Rename 'Title' back to 'Series_Title' to match algorithm functions
+        merged_df.rename(columns={'Title': 'Series_Title'}, inplace=True)
 
-    # Step 3: Fit the KNN model
-    knn = NearestNeighbors(metric='cosine', algorithm='brute')
-    knn.fit(user_item_matrix.values)
-    
-    # Step 4: Find the nearest neighbors for the target movie
-    query_index = user_item_matrix.index.get_loc(target_movie_id)
-    distances, indices = knn.kneighbors(
-        user_item_matrix.iloc[query_index, :].values.reshape(1, -1), 
-        n_neighbors=top_n + 1
-    )
-    
-    # Step 5: Format and return the recommendations
-    recommended_movie_ids = [user_item_matrix.index[i] for i in indices.flatten()][1:]
-    recommendations_df = merged_df[merged_df['Movie_ID'].isin(recommended_movie_ids)].copy()
-    
-    return recommendations_df
+        return merged_df, user_ratings_df
+    except FileNotFoundError as e:
+        st.error(f"❌ Error loading data file: {e}. Please make sure the CSV files are in the correct directory.")
+        return None, None
+
+# --- Main Application ---
+def main():
+    st.title("🎬 Movie Recommendation System")
+    st.markdown("---")
+
+    merged_df, user_ratings_df = load_data()
+
+    if merged_df is not None and user_ratings_df is not None:
+        with st.sidebar:
+            st.header("🔍 Select Your Preferences")
+
+            algorithm = st.radio(
+                "Choose a Recommendation Algorithm",
+                ("Content-Based", "Collaborative", "Hybrid")
+            )
+
+            movie_titles = sorted(merged_df['Series_Title'].unique())
+            selected_movie = st.selectbox(
+                "Select a Movie You Like",
+                options=[""] + movie_titles
+            )
+
+            all_genres = sorted(merged_df['Genre_x'].astype(str).str.split(', ').explode().unique())
+            selected_genre = st.selectbox(
+                "Filter by Genre (Optional)",
+                options=[""] + all_genres
+            )
+
+        # --- Corrected Recommendation Logic ---
+        if st.sidebar.button("Get Recommendations"):
+            if selected_movie:
+                with st.spinner('🤖 Generating recommendations...'):
+                    results_df = pd.DataFrame() 
+
+                    if algorithm == "Content-Based":
+                        results_df = content_based_filtering_enhanced(merged_df, selected_movie)
+                    
+                    elif algorithm == "Collaborative":
+                        results_df = collaborative_filtering_enhanced(merged_df, user_ratings_df, selected_movie)
+                    
+                    elif algorithm == "Hybrid":
+                        results_df = smart_hybrid_recommendation(merged_df, user_ratings_df, selected_movie)
+                    
+                    # --- Display Results ---
+                    if not results_df.empty:
+                        if selected_genre:
+                            genre_col = 'Genre_x' if 'Genre_x' in results_df.columns else 'Genre'
+                            results_df = results_df[results_df[genre_col].str.contains(selected_genre, case=False, na=False)]
+
+                        if not results_df.empty:
+                            st.success(f"🎉 Found {len(results_df)} recommendations!")
+                            for index, row in results_df.iterrows():
+                                col1, col2 = st.columns([1, 4])
+                                with col1:
+                                    st.image(row.get('Poster_Link', ''), use_column_width=True)
+                                with col2:
+                                    st.subheader(row['Series_Title'])
+                                    st.write(f"**Genre:** {row.get('Genre_x', 'N/A')}")
+                                    st.write(f"**IMDb Rating:** {row.get('IMDB_Rating', 'N/A')} ⭐")
+                                    st.caption(f"**Overview:** {row.get('Overview_x', 'N/A')}")
+                                st.markdown("---")
+                        else:
+                            st.warning(f"⚠️ No recommendations for '{selected_movie}' match the genre '{selected_genre}'.")
+                    else:
+                        st.error(f"❌ Could not generate recommendations for '{selected_movie}' with the '{algorithm}' algorithm.")
+            else:
+                st.warning("👈 Please select a movie to get recommendations.")
+        else:
+             st.info("👋 Select a movie and algorithm, then click 'Get Recommendations'.")
+
+if __name__ == "__main__":
+    main()
