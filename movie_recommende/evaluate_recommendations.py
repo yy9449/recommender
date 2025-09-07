@@ -22,7 +22,7 @@ BETA = 0.3   # Collaborative weight
 GAMMA = 0.2  # Popularity weight
 DELTA = 0.1  # Recency weight
 
-RATING_THRESHOLD = 3.0  # ratings >= threshold are positive
+RATING_THRESHOLD = 4.0  # ratings >= threshold are positive
 TEST_SIZE_PER_USER = 0.2
 RANDOM_STATE = 42
 K_NEIGHBORS = 20  # for item-based KNN similarity neighborhood
@@ -337,6 +337,7 @@ def evaluate_models():
 			'Method Used': name,
 			'Precision': round(results[name]['precision'], 2),
 			'Recall': round(results[name]['recall'], 2),
+			'Balanced Acc': round(results[name]['balanced_accuracy'], 2),
 			'RMSE': round(results[name]['rmse'], 2),
 			'MAE': round(results[name]['mae'], 2),
 			'Notes': (
@@ -346,10 +347,10 @@ def evaluate_models():
 			)
 		}
 		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'MAE', 'Notes'])
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'Balanced Acc', 'RMSE', 'MAE', 'Notes'])
 	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
 
 
-if _name_ == '_main_':
+if __name__ == '__main__':
 	evaluate_models()
