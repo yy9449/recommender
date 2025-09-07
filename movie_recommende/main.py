@@ -410,7 +410,8 @@ def main():
                     st.warning("⚠️ Collaborative filtering requires a movie title input.")
                     return
             else:  # Hybrid
-                results = smart_hybrid_recommendation(merged_df, movie_title, genre_input, top_n)
+                results = smart_hybrid_recommendation(user_id=1, movie_title=movie_title, genre_input=genre_input, 
+                                    df=merged_df, ratings_df=user_ratings_df, top_n=top_n)
             
             # Display results
             if results is not None and not results.empty:
