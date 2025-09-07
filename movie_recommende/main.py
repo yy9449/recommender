@@ -7,22 +7,25 @@ import requests
 import io
 import os
 
-# --- Corrected Algorithm Imports ---
+# --- Correctly Integrated Algorithm Imports ---
 from content_based import content_based_filtering_enhanced
 from collaborative import collaborative_filtering_enhanced
 from hybrid import smart_hybrid_recommendation
 
 warnings.filterwarnings('ignore')
 
-# --- Page Config ---
-st.set_page_config(page_title="🎬 Movie Recommender", page_icon="🎬", layout="wide")
+# =========================
+# Streamlit Page Configuration
+# =========================
+st.set_page_config(page_title="🎬 Movie Recommender", page_icon="🎬", layout="wide", initial_sidebar_state="expanded")
+st.title("🎬 Movie Recommendation System")
 
 # =========================
 # Data Loading and Preparation
 # =========================
 @st.cache_data
-def load_data():
-    """Loads and merges data from GitHub with a local fallback."""
+def load_and_prepare_data():
+    """Loads and merges data from GitHub with a local fallback, handling column name changes."""
     github_base_url = "https://raw.githubusercontent.com/yy9449/recommender/main/movie_recommende/"
     
     try:
@@ -30,70 +33,60 @@ def load_data():
         imdb_df = pd.read_csv(github_base_url + "imdb_top_1000.csv")
         user_ratings_df = pd.read_csv(github_base_url + "user_movie_rating.csv")
         st.session_state['data_source'] = "GitHub"
-    except Exception as e:
-        st.warning("⚠️ Could not load data from GitHub, attempting to load local files...")
+    except Exception:
+        st.warning("⚠️ GitHub loading failed. Attempting to load local files...")
         try:
             movies_df = pd.read_csv("movies.csv")
             imdb_df = pd.read_csv("imdb_top_1000.csv")
             user_ratings_df = pd.read_csv("user_movie_rating.csv")
-            st.session_state['data_source'] = "Local"
+            st.session_state['data_source'] = "Local Files"
         except FileNotFoundError:
-            st.error("❌ CRITICAL: Could not find required CSV files locally. Please ensure 'movies.csv', 'imdb_top_1000.csv', and 'user_movie_rating.csv' are in the same directory.")
+            st.error("❌ CRITICAL ERROR: Required CSV files not found locally. App cannot run.")
             return None, None
             
-    # --- Perform the merge and cleaning ---
-    imdb_df.rename(columns={'Series_Title': 'Title'}, inplace=True)
-    movies_df.rename(columns={'Series_Title': 'Title'}, inplace=True)
-    # Use an outer merge to keep all movies, then clean up
-    merged_df = pd.merge(imdb_df, movies_df, on="Title", how="outer", suffixes=('_x', '_y'))
+    # --- The CRITICAL Merge Step ---
+    # We merge imdb (left) with movies (right). Pandas will add '_x' and '_y' to overlapping columns.
+    # Our algorithms have been fixed to use the '_x' columns from the richer imdb_df.
+    merged_df = pd.merge(imdb_df, movies_df, on="Series_Title", how="left", suffixes=('_x', '_y'))
 
-    # Create a unique Movie_ID
+    # Ensure a consistent Movie_ID column
     if 'Movie_ID' not in merged_df.columns:
-        if 'Movie_ID_y' in merged_df.columns:
-            merged_df['Movie_ID'] = merged_df['Movie_ID_y'].fillna(0).astype(int)
-        else:
-            merged_df['Movie_ID'] = range(len(merged_df))
+        merged_df['Movie_ID'] = merged_df.index
     
-    # Rename title back for consistency
-    merged_df.rename(columns={'Title': 'Series_Title'}, inplace=True)
-    
-    return merged_df.drop_duplicates(subset=['Series_Title']), user_ratings_df
+    return merged_df.drop_duplicates(subset=['Series_Title']).reset_index(drop=True), user_ratings_df
 
 # =========================
 # Main Application
 # =========================
 def main():
-    st.title("🎬 Movie Recommendation System")
-
-    merged_df, user_ratings_df = load_data()
+    merged_df, user_ratings_df = load_and_prepare_data()
 
     if merged_df is None:
         st.stop()
 
-    st.success(f"🎉 Datasets loaded successfully from {st.session_state.get('data_source', 'source')}!")
+    st.success(f"🎉 Datasets loaded from {st.session_state.get('data_source', 'source')}. Ready to recommend!")
 
     # --- Sidebar for User Input ---
     with st.sidebar:
         st.header("🎯 Recommendation Settings")
 
-        # Movie and Genre Selection
         movie_titles = sorted(merged_df['Series_Title'].dropna().unique())
-        movie_title = st.selectbox("Select a Movie (for Content, Hybrid, Collaborative):", [""] + movie_titles)
+        movie_title = st.selectbox("1. Select a Movie:", [""] + movie_titles)
         
-        genre_col = 'Genre_x' # Consistently use the genre from imdb_top_1000
+        # Use the correct 'Genre_x' column
+        genre_col = 'Genre_x'
         all_genres = sorted(merged_df[genre_col].dropna().str.split(', ').explode().unique())
-        genre_input = st.selectbox("Filter by Genre (Optional):", [""] + all_genres)
+        genre_input = st.selectbox("2. Filter by Genre (Optional):", [""] + all_genres)
         
-        # Algorithm and Top N Selection
-        algorithm = st.selectbox("🔬 Choose Algorithm:", ["Hybrid", "Content-Based", "Collaborative"])
-        top_n = st.slider("📊 Number of Recommendations:", 5, 20, 10)
-
+        algorithm = st.selectbox("3. Choose Algorithm:", ["Hybrid", "Content-Based", "Collaborative"])
+        top_n = st.slider("4. Number of Recommendations:", 5, 20, 10)
+        
         generate_button = st.button("🚀 Generate Recommendations", type="primary")
 
-    # --- Recommendation Logic ---
+    # --- Recommendation and Display Logic ---
     if generate_button:
         if not movie_title:
-            st.error("❌ Please select a movie to get recommendations.")
+            st.error("❌ Please select a movie from the dropdown to get recommendations.")
             return
 
         with st.spinner("Finding movies you'll love..."):
@@ -106,14 +99,12 @@ def main():
             elif algorithm == "Hybrid":
                 results = smart_hybrid_recommendation(merged_df, user_ratings_df, movie_title, top_n)
 
-            # --- Filter and Display Results ---
             if not results.empty:
                 if genre_input:
                     results = results[results[genre_col].str.contains(genre_input, na=False, case=False)]
 
                 if not results.empty:
-                    st.subheader(f"Recommendations for '{movie_title}'")
-                    # Display posters
+                    st.subheader(f"Top {len(results)} Recommendations for '{movie_title}'")
                     for i in range(0, len(results), 5):
                         cols = st.columns(5)
                         for j, (_, row) in enumerate(results.iloc[i:i+5].iterrows()):
@@ -125,7 +116,7 @@ def main():
                 else:
                     st.warning(f"No recommendations for '{movie_title}' matched the genre '{genre_input}'.")
             else:
-                st.error(f"Could not generate recommendations for '{movie_title}' with the {algorithm} algorithm. The movie might not have enough data.")
+                st.error(f"Could not generate recommendations for '{movie_title}' with the {algorithm} algorithm.")
 
 if __name__ == "__main__":
     main()
