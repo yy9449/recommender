@@ -5,15 +5,16 @@ from sklearn.neighbors import NearestNeighbors
 import streamlit as st
 
 @st.cache_data
-def collaborative_filtering_enhanced(merged_df: pd.DataFrame, user_ratings_df: pd.DataFrame, target_movie: str, top_n: int = 10):
+def collaborative_filtering_enhanced(clean_df: pd.DataFrame, user_ratings_df: pd.DataFrame, target_movie: str, top_n: int = 10):
     """
-    Generates recommendations using item-based KNN, synchronized with main.py.
+    Generates recommendations using item-based KNN.
+    Built to work with the clean dataframe from main.py.
     """
     if user_ratings_df is None or user_ratings_df.empty:
         st.warning("User rating data not available for Collaborative Filtering.")
         return pd.DataFrame()
 
-    target_movie_id_series = merged_df[merged_df['Series_Title'] == target_movie]['Movie_ID']
+    target_movie_id_series = clean_df.loc[clean_df['Series_Title'] == target_movie, 'Movie_ID']
     if target_movie_id_series.empty:
         return pd.DataFrame()
     target_movie_id = target_movie_id_series.iloc[0]
@@ -32,4 +33,4 @@ def collaborative_filtering_enhanced(merged_df: pd.DataFrame, user_ratings_df: p
     
     recommended_movie_ids = [user_item_matrix.index[i] for i in indices.flatten()][1:]
     
-    return merged_df[merged_df['Movie_ID'].isin(recommended_movie_ids)]
+    return clean_df[clean_df['Movie_ID'].isin(recommended_movie_ids)]
