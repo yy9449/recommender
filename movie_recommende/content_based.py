@@ -6,20 +6,19 @@ from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
 
 @st.cache_data
-def content_based_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str, top_n: int = 10):
+def content_based_filtering_enhanced(clean_df: pd.DataFrame, target_movie: str, top_n: int = 10):
     """
     Generates movie recommendations using a TF-IDF content model.
-    This version is GUARANTEED to work with the dataframe structure from main.py.
+    This version is BUILT to work with the clean, predictable dataframe from main.py.
     """
-    if target_movie not in merged_df['Series_Title'].values:
+    if target_movie not in clean_df['Series_Title'].values:
         return pd.DataFrame()
 
-    # --- Use the definitive column names after the merge ---
-    # These '_x' columns come from the richer imdb_top_1000.csv file
-    df_copy = merged_df.copy()
+    # --- Use the clean, guaranteed column names ---
+    df_copy = clean_df.copy()
     df_copy['soup'] = (
-        df_copy['Overview_x'].fillna('') + ' ' +
-        df_copy['Genre_x'].fillna('') + ' ' +
+        df_copy['Overview'].fillna('') + ' ' +
+        df_copy['Genre'].fillna('') + ' ' +
         df_copy['Director'].fillna('') + ' ' +
         df_copy['Star1'].fillna('')
     )
@@ -33,4 +32,4 @@ def content_based_filtering_enhanced(merged_df: pd.DataFrame, target_movie: str,
     sim_scores = sim_scores[1:top_n + 1]
     movie_indices = [i[0] for i in sim_scores]
 
-    return merged_df.iloc[movie_indices]
+    return clean_df.iloc[movie_indices]
