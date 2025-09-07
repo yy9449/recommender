@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, accuracy_score, balanced_accuracy_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, accuracy_score, mean_squared_error
 from sklearn.model_selection import train_test_split
+from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -12,6 +14,7 @@ from content_based import (
 	create_content_features,
 	find_rating_column,
 	find_genre_column,
+	find_director_column,
 )
 
 # =============================================================
@@ -117,7 +120,7 @@ def compute_popularity_and_recency(merged, ratings_df=None):
 # =============================================================
 
 def predict_content_scores(merged, content_matrix):
-	# Return normalized content similarity scores between items
+	# Return raw cosine similarity scores between items (already in [0,1] for TF-IDF)
 	sim = cosine_similarity(content_matrix)
 	index_by_title = {t: i for i, t in enumerate(merged['Series_Title'])}
 	return sim, index_by_title
@@ -171,16 +174,27 @@ def split_per_user(user_ratings, test_size=TEST_SIZE_PER_USER, random_state=RAND
 def evaluate_models():
 	merged, ratings = load_datasets()
 	genre_col, rating_col, year_col, votes_col = get_cols(merged)
+
+	# Filter ratings to those movies present in merged
+	present_ids = set(merged['Movie_ID'].unique())
+	ratings = ratings[ratings['Movie_ID'].isin(present_ids)].copy()
+
+	# Split BEFORE building models to avoid leakage
+	train_df, test_df = split_per_user(ratings)
+
+	# Content features/similarity (independent of split)
 	content_matrix = build_content_matrix(merged)
 	sim_matrix, title_to_idx = predict_content_scores(merged, content_matrix)
-	# Split first, then build KNN/popularity on training data to avoid leakage
-	train_df, test_df = split_per_user(ratings)
+
+	# Collaborative KNN built on training data only
 	knn, user_item = build_item_similarity_knn(train_df, merged)
+
+	# Popularity/recency based on training interactions
 	popularity, recency = compute_popularity_and_recency(merged, train_df)
 
 	# Build quick lookups
 	movieid_to_title = dict(merged[['Movie_ID', 'Series_Title']].values)
-	# title_to_movieid not used in evaluation; removed to simplify
+	title_to_movieid = {v: k for k, v in movieid_to_title.items()}
 	user_train = train_df.groupby('User_ID')
 
 	# Baselines for collaborative filtering (bias terms)
@@ -196,6 +210,13 @@ def evaluate_models():
 		idxs = [i for i in idxs if i is not None]
 		if idxs:
 			profile = sim_matrix[idxs].mean(axis=0)
+			# Per-user min-max normalization to spread scores to [0,1]
+			prof_min = float(np.min(profile))
+			prof_max = float(np.max(profile))
+			if prof_max > prof_min:
+				profile = (profile - prof_min) / (prof_max - prof_min)
+			else:
+				profile = np.zeros_like(profile)
 			user_content_pref[user_id] = profile
 		else:
 			user_content_pref[user_id] = np.zeros(sim_matrix.shape[0])
@@ -248,14 +269,10 @@ def evaluate_models():
 		# Fallback to item mean if no info
 		if np.isnan(collab_score):
 			item_ratings = train_df[train_df['Movie_ID'] == movie_id]['Rating']
-			collab_score = item_ratings.mean() if not item_ratings.empty else global_mean
+			collab_score = item_ratings.mean() if not item_ratings.empty else ratings['Rating'].mean()
 
-		# Normalize content score (cosine in [-1,1]) to rating scale using item rating as quality prior
-		item_quality = merged.loc[merged['Movie_ID'] == movie_id, rating_col]
-		item_quality = float(item_quality.iloc[0]) if not item_quality.empty else 7.0
-		# map cosine similarity s in [-1,1] -> [2,10]: 2 + 8 * ((s+1)/2) = 6 + 4*s
-		content_rating_est = 2.0 + 8.0 * ((content_score + 1.0) / 2.0)
-		content_rating_est = 0.7 * content_rating_est + 0.3 * item_quality
+		# Map content similarity directly to rating scale without IMDB rating blending
+		content_rating_est = 2.0 + 8.0 * float(np.clip(content_score, 0.0, 1.0))  # [0,1] -> [2,10]
 
 		# Popularity & Recency (0..1) mapped to 2..10
 		pop = popularity.get(title, 0.5)
@@ -286,7 +303,8 @@ def evaluate_models():
 		y_true_cls.append(true_label)
 		y_pred_cls_content.append(1 if content_rating_est >= RATING_THRESHOLD else 0)
 		y_pred_cls_collab.append(1 if collab_score >= RATING_THRESHOLD else 0)
-		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(hybrid_pred >= RATING_THRESHOLD)
+		pop_rec_avg = (pop_rating + rec_rating) / 2.0
+		votes = int(content_rating_est >= RATING_THRESHOLD) + int(collab_score >= RATING_THRESHOLD) + int(pop_rec_avg >= RATING_THRESHOLD)
 		y_pred_cls_hybrid.append(1 if votes >= 2 else 0)
 
 	# Compute metrics
@@ -296,14 +314,12 @@ def evaluate_models():
 			'recall': recall_score(y_true, y_pred, zero_division=0),
 			'f1': f1_score(y_true, y_pred, zero_division=0),
 			'accuracy': accuracy_score(y_true, y_pred),
-			'balanced_accuracy': balanced_accuracy_score(y_true, y_pred),
 			'report': classification_report(y_true, y_pred, target_names=['negative', 'positive'], zero_division=0)
 		}
 
 	def compute_regression_metrics(y_true, y_pred):
 		mse = mean_squared_error(y_true, y_pred)
-		mae = mean_absolute_error(y_true, y_pred)
-		return {'mse': mse, 'rmse': float(np.sqrt(mse)), 'mae': float(mae)}
+		return {'mse': mse, 'rmse': float(np.sqrt(mse))}
 
 	results = {}
 	results['Content-Based'] = {
@@ -338,7 +354,6 @@ def evaluate_models():
 			'Precision': round(results[name]['precision'], 2),
 			'Recall': round(results[name]['recall'], 2),
 			'RMSE': round(results[name]['rmse'], 2),
-			'MAE': round(results[name]['mae'], 2),
 			'Notes': (
 				'Worked well with dense ratings' if name == 'Collaborative' else
 				'Good with rich metadata' if name == 'Content-Based' else
@@ -346,7 +361,7 @@ def evaluate_models():
 			)
 		}
 		summary_rows.append(row)
-	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'MAE', 'Notes'])
+	summary_df = pd.DataFrame(summary_rows, columns=['Method Used', 'Precision', 'Recall', 'RMSE', 'Notes'])
 	print('\nComparison Table:')
 	print(summary_df.to_string(index=False))
 
